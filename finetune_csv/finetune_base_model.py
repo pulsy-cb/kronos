@@ -50,7 +50,10 @@ class CustomKlineDataset(Dataset):
         print(f"[{data_type.upper()}] Data length: {len(self.data)}, Available samples: {self.n_samples}")
     
     def _load_and_preprocess_data(self):
-        df = pd.read_csv(self.data_path)
+        if self.data_path.endswith('.parquet'):
+            df = pd.read_parquet(self.data_path)
+        else:
+            df = pd.read_csv(self.data_path)
         
         df['timestamps'] = pd.to_datetime(df['timestamps'])
         df = df.sort_values('timestamps').reset_index(drop=True)
