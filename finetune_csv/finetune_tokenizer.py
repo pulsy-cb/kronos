@@ -153,6 +153,14 @@ def train_tokenizer(model, device, config, save_dir, logger):
     use_ddp = dist.is_available() and dist.is_initialized()
     rank = dist.get_rank() if use_ddp else 0
     world_size = dist.get_world_size() if use_ddp else 1
+
+    # Mixed precision (AMP) setup
+    use_amp = getattr(config, 'use_amp', False) and torch.cuda.is_available()
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16 if use_amp else torch.float32
+    if use_amp:
+        logger.info(f"Mixed precision training enabled (dtype={amp_dtype})")
+        print(f"Mixed precision training enabled (dtype={amp_dtype})")
     
     train_loader, val_loader, train_dataset, val_dataset, train_sampler, val_sampler = create_dataloaders(config)
     
@@ -191,27 +199,30 @@ def train_tokenizer(model, device, config, save_dir, logger):
         
         for batch_idx, (ori_batch_x, _) in enumerate(train_loader):
             ori_batch_x = ori_batch_x.squeeze(0).to(device, non_blocking=True)
-            
+
             current_batch_total_loss = 0.0
             for j in range(accumulation_steps):
                 start_idx = j * (ori_batch_x.shape[0] // accumulation_steps)
                 end_idx = (j + 1) * (ori_batch_x.shape[0] // accumulation_steps)
                 batch_x = ori_batch_x[start_idx:end_idx]
-                
-                zs, bsq_loss, _, _ = (model.module if use_ddp else model)(batch_x)
-                z_pre, z = zs
-                
-                recon_loss_pre = F.mse_loss(z_pre, batch_x)
-                recon_loss_all = F.mse_loss(z, batch_x)
-                recon_loss = recon_loss_pre + recon_loss_all
-                loss = (recon_loss + bsq_loss) / 2
-                
+
+                with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
+                    zs, bsq_loss, _, _ = (model.module if use_ddp else model)(batch_x)
+                    z_pre, z = zs
+
+                    recon_loss_pre = F.mse_loss(z_pre, batch_x)
+                    recon_loss_all = F.mse_loss(z, batch_x)
+                    recon_loss = recon_loss_pre + recon_loss_all
+                    loss = (recon_loss + bsq_loss) / 2
+
                 loss_scaled = loss / accumulation_steps
                 current_batch_total_loss += loss.item()
-                loss_scaled.backward()
+                scaler.scale(loss_scaled).backward()
             
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_((model.module if use_ddp else model).parameters(), max_norm=2.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
             optimizer.zero_grad()
             
@@ -240,9 +251,10 @@ def train_tokenizer(model, device, config, save_dir, logger):
         with torch.no_grad():
             for ori_batch_x, _ in val_loader:
                 ori_batch_x = ori_batch_x.squeeze(0).to(device, non_blocking=True)
-                zs, _, _, _ = (model.module if use_ddp else model)(ori_batch_x)
-                _, z = zs
-                val_loss_item = F.mse_loss(z, ori_batch_x)
+                with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
+                    zs, _, _, _ = (model.module if use_ddp else model)(ori_batch_x)
+                    _, z = zs
+                    val_loss_item = F.mse_loss(z, ori_batch_x)
                 
                 tot_val_loss_sum_rank += val_loss_item.item() * ori_batch_x.size(0)
                 val_sample_count_rank += ori_batch_x.size(0)

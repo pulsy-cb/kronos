@@ -37,6 +37,8 @@ MANIFEST
 .AppleDouble
 .LSOverride
 
+data/parquet/
+
 # Windows
 Thumbs.db
 ehthumbs.db

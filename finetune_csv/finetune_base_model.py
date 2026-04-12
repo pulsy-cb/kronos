@@ -244,7 +244,15 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
     use_ddp = dist.is_available() and dist.is_initialized()
     rank = dist.get_rank() if use_ddp else 0
     world_size = dist.get_world_size() if use_ddp else 1
-    
+
+    # Mixed precision (AMP) setup
+    use_amp = getattr(config, 'use_amp', False) and torch.cuda.is_available()
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16 if use_amp else torch.float32
+    if use_amp:
+        logger.info(f"Mixed precision training enabled (dtype={amp_dtype})")
+        print(f"Mixed precision training enabled (dtype={amp_dtype})")
+
     train_loader, val_loader, train_dataset, val_dataset, train_sampler, val_sampler = create_dataloaders(config)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -284,20 +292,23 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
         for batch_idx, (batch_x, batch_x_stamp) in enumerate(train_loader):
             batch_x = batch_x.to(device, non_blocking=True)
             batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
-            
+
             with torch.no_grad():
                 token_seq_0, token_seq_1 = tokenizer.encode(batch_x, half=True)
-            
+
             token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
             token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
-            
-            logits = (model.module if use_ddp else model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-            loss, s1_loss, s2_loss = (model.module if use_ddp else model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
-            
+
+            with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
+                logits = (model.module if use_ddp else model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                loss, s1_loss, s2_loss = (model.module if use_ddp else model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+
             optimizer.zero_grad()
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_((model.module if use_ddp else model).parameters(), max_norm=3.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
             
             epoch_train_loss += loss.item()
@@ -321,13 +332,14 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
             for batch_x, batch_x_stamp in val_loader:
                 batch_x = batch_x.to(device, non_blocking=True)
                 batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
-                
+
                 token_seq_0, token_seq_1 = tokenizer.encode(batch_x, half=True)
                 token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
                 token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
-                
-                logits = (model.module if use_ddp else model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-                loss, _, _ = (model.module if use_ddp else model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+
+                with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
+                    logits = (model.module if use_ddp else model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                    loss, _, _ = (model.module if use_ddp else model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
                 
                 val_loss += loss.item()
                 val_batches += 1
