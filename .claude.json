@@ -1,0 +1,39 @@
+{
+  "numStartups": 2,
+  "installMethod": "native",
+  "autoUpdates": false,
+  "tipsHistory": {
+    "new-user-warmup": 1,
+    "plan-mode-for-complex-tasks": 1,
+    "terminal-setup": 2,
+    "memory-command": 2,
+    "theme-command": 2
+  },
+  "firstStartTime": "2026-04-12T10:37:40.519Z",
+  "opusProMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "migrationVersion": 11,
+  "userID": "4494854bbd0f2577f41bd99d75db7c4083c88a056aeaa42c025d6d3dba8a710a",
+  "changelogLastFetched": 1775990260640,
+  "autoUpdatesProtectedForNative": true,
+  "hasCompletedOnboarding": true,
+  "lastOnboardingVersion": "2.1.104",
+  "lastReleaseNotesSeen": "2.1.104",
+  "projects": {
+    "/teamspace/studios/this_studio": {
+      "allowedTools": [],
+      "mcpContextUris": [],
+      "mcpServers": {},
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": [],
+      "hasTrustDialogAccepted": false,
+      "projectOnboardingSeenCount": 1,
+      "hasClaudeMdExternalIncludesApproved": false,
+      "hasClaudeMdExternalIncludesWarningShown": false,
+      "exampleFiles": []
+    }
+  },
+  "officialMarketplaceAutoInstallAttempted": true,
+  "officialMarketplaceAutoInstalled": true,
+  "showSpinnerTree": false
+}
