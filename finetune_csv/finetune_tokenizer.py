@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.tensorboard import SummaryWriter
 from time import gmtime, strftime
 import datetime
 import logging
@@ -161,7 +162,14 @@ def train_tokenizer(model, device, config, save_dir, logger):
     if use_amp:
         logger.info(f"Mixed precision training enabled (dtype={amp_dtype})")
         print(f"Mixed precision training enabled (dtype={amp_dtype})")
-    
+
+    # TensorBoard writer
+    tb_dir = os.path.join(os.path.dirname(save_dir), "tensorboard", "tokenizer")
+    writer = SummaryWriter(log_dir=tb_dir) if rank == 0 else None
+    if rank == 0:
+        print(f"TensorBoard logs: {tb_dir}")
+        print(f"Run: tensorboard --logdir {os.path.dirname(tb_dir)}")
+
     train_loader, val_loader, train_dataset, val_dataset, train_sampler, val_sampler = create_dataloaders(config)
     
     optimizer = torch.optim.AdamW(
@@ -241,6 +249,14 @@ def train_tokenizer(model, device, config, save_dir, logger):
                 logger.info(detail_msg)
                 if rank == 0:
                     print(detail_msg)
+
+                if writer is not None:
+                    global_step = epoch * len(train_loader) + batch_idx
+                    writer.add_scalar('train/loss', avg_loss, global_step)
+                    writer.add_scalar('train/vq_loss', bsq_loss.item(), global_step)
+                    writer.add_scalar('train/recon_loss_pre', recon_loss_pre.item(), global_step)
+                    writer.add_scalar('train/recon_loss_all', recon_loss_all.item(), global_step)
+                    writer.add_scalar('train/lr', lr, global_step)
             
             batch_idx_global += 1
         
@@ -286,7 +302,14 @@ def train_tokenizer(model, device, config, save_dir, logger):
                 save_msg = f"Best model saved to: {model_save_path} (validation loss: {best_val_loss:.4f})"
                 logger.info(save_msg)
                 print(save_msg)
-    
+
+        if writer is not None:
+            writer.add_scalar('val/loss', avg_val_loss, epoch)
+            writer.add_scalar('val/best_loss', best_val_loss, epoch)
+
+    if writer is not None:
+        writer.close()
+
     return best_val_loss
 
 
