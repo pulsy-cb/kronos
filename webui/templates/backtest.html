@@ -155,17 +155,44 @@
                     <p><strong>Frequency:</strong> <span id="data-timeframe">-</span></p>
                 </div>
 
+                <!-- Backtest Period Selection -->
+                <div class="form-group">
+                    <label for="backtest-start">Start Date:</label>
+                    <input type="date" id="backtest-start">
+                    <small class="form-text">Leave empty to use full data from start</small>
+                </div>
+                <div class="form-group">
+                    <label for="backtest-end">End Date:</label>
+                    <input type="date" id="backtest-end">
+                    <small class="form-text">Leave empty to use full data until end</small>
+                </div>
+
                 <hr style="margin: 20px 0; border: 1px solid #e2e8f0;">
 
+                <!-- Preset Selector -->
+                <div class="form-group">
+                    <label for="preset-select">Timeframe Preset:</label>
+                    <select id="preset-select">
+                        <option value="auto">Auto (detect from data)</option>
+                        <option value="M1">M1 — 1 min (lookback=480, pred=30, step=30)</option>
+                        <option value="M5">M5 — 5 min (lookback=400, pred=120, step=60)</option>
+                        <option value="M15">M15 — 15 min (lookback=400, pred=120, step=60)</option>
+                        <option value="H1">H1 — 1 hour (lookback=400, pred=48, step=24)</option>
+                        <option value="H4">H4 — 4 hours (lookback=200, pred=48, step=24)</option>
+                        <option value="D1">D1 — 1 day (lookback=200, pred=30, step=10)</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                    <small class="form-text">Auto-detects timeframe from data or set manually</small>
+                </div>
                 <div class="form-group">
                     <label for="lookback">Lookback:</label>
                     <input type="number" id="lookback" value="400" min="50" max="2048">
-                    <small class="form-text">Historical window for prediction</small>
+                    <small class="form-text">Historical window — <span id="lookback-info">M5: ~1.4 days</span></small>
                 </div>
                 <div class="form-group">
                     <label for="pred-len">Prediction Length:</label>
                     <input type="number" id="pred-len" value="120" min="10" max="512">
-                    <small class="form-text">Future steps to predict</small>
+                    <small class="form-text">Future steps — <span id="pred-info">M5: ~10 hours</span></small>
                 </div>
                 <div class="form-group">
                     <label for="step-size">Step Size:</label>
@@ -173,17 +200,38 @@
                     <small class="form-text">Advance window by this many bars</small>
                 </div>
                 <div class="form-group">
-                    <label for="signal-threshold">Signal Threshold (%):</label>
-                    <input type="number" id="signal-threshold" value="0.5" min="0.1" max="10" step="0.1">
-                    <small class="form-text">Min predicted return to trigger trade</small>
+                    <label for="signal-threshold">Entry Threshold (%):</label>
+                    <input type="number" id="signal-threshold" value="0.5" min="0.01" max="10" step="0.01">
+                    <small class="form-text">Min predicted return to enter a trade</small>
+                </div>
+                <div class="form-group">
+                    <label for="exit-threshold">Exit Threshold (%):</label>
+                    <input type="number" id="exit-threshold" value="0.25" min="0.01" max="10" step="0.01">
+                    <small class="form-text">Predicted return below this to signal exit</small>
+                </div>
+                <div class="form-group">
+                    <label for="stop-loss">Stop-Loss (%):</label>
+                    <input type="number" id="stop-loss" value="0.15" min="0" max="10" step="0.01">
+                    <small class="form-text">0 = disabled. Auto-sell if loss exceeds this</small>
+                </div>
+                <div class="form-group">
+                    <label for="take-profit">Take-Profit (%):</label>
+                    <input type="number" id="take-profit" value="0.3" min="0" max="20" step="0.01">
+                    <small class="form-text">0 = disabled. Auto-sell if profit exceeds this</small>
+                </div>
+                <div class="form-group">
+                    <label for="max-hold">Max Hold (bars):</label>
+                    <input type="number" id="max-hold" value="0" min="0" max="99999" step="1">
+                    <small class="form-text">0 = disabled. Force-sell after N bars</small>
                 </div>
                 <div class="form-group">
                     <label for="initial-capital">Initial Capital:</label>
                     <input type="number" id="initial-capital" value="100000" min="1000" step="1000">
                 </div>
                 <div class="form-group">
-                    <label for="transaction-cost">Transaction Cost (%):</label>
-                    <input type="number" id="transaction-cost" value="0.1" min="0" max="5" step="0.01">
+                    <label for="commission">Commission ($/round trip):</label>
+                    <input type="number" id="commission" value="0.07" min="0" max="100" step="0.01">
+                    <small class="form-text">Total commission for buy + sell (split 50/50)</small>
                 </div>
 
                 <hr style="margin: 20px 0; border: 1px solid #e2e8f0;">
@@ -201,6 +249,11 @@
                 <div class="form-group">
                     <label for="sample-count">Sample Count:</label>
                     <input type="number" id="sample-count" value="1" min="1" max="5" step="1">
+                </div>
+                <div class="form-group">
+                    <label for="batch-size">Batch Size:</label>
+                    <input type="number" id="batch-size" value="16" min="1" max="128" step="1">
+                    <small style="color:#a0aec0;">Windows processed together on GPU (higher = faster)</small>
                 </div>
 
                 <button id="start-btn" class="btn btn-success" disabled>Start Backtest</button>
@@ -254,6 +307,7 @@
                                         <th>Shares</th>
                                         <th>P&L</th>
                                         <th>Return %</th>
+                                        <th>Exit Reason</th>
                                     </tr>
                                 </thead>
                                 <tbody id="trade-tbody"></tbody>
@@ -271,6 +325,75 @@
         let modelLoaded = false;
         let currentSessionId = null;
         let progressInterval = null;
+
+        // Preset configurations: lookback, pred_len, step_size, and human-readable hints
+        const PRESETS = {
+            'M1':  { lookback: 480, pred_len: 30,  step_size: 30,  lb_hint: '~8 hours',   pred_hint: '~30 min',
+                     entry_threshold: 0.08, exit_threshold: 0.05, stop_loss: 0.25, take_profit: 0.5, max_hold: 120 },
+            'M5':  { lookback: 400, pred_len: 120, step_size: 60,  lb_hint: '~1.4 days',  pred_hint: '~10 hours',
+                     entry_threshold: 0.12, exit_threshold: 0.07, stop_loss: 0.35, take_profit: 0.7, max_hold: 144 },
+            'M15': { lookback: 400, pred_len: 120, step_size: 60,  lb_hint: '~4 days',    pred_hint: '~30 hours',
+                     entry_threshold: 0.20, exit_threshold: 0.12, stop_loss: 0.50, take_profit: 1.0, max_hold: 64 },
+            'H1':  { lookback: 400, pred_len: 48,  step_size: 24,  lb_hint: '~16 days',   pred_hint: '~2 days',
+                     entry_threshold: 0.30, exit_threshold: 0.15, stop_loss: 0.80, take_profit: 1.5, max_hold: 48 },
+            'H4':  { lookback: 200, pred_len: 48,  step_size: 24,  lb_hint: '~33 days',   pred_hint: '~8 days',
+                     entry_threshold: 0.50, exit_threshold: 0.25, stop_loss: 1.20, take_profit: 2.5, max_hold: 24 },
+            'D1':  { lookback: 200, pred_len: 30,  step_size: 10,  lb_hint: '~200 days',  pred_hint: '~30 days',
+                     entry_threshold: 1.00, exit_threshold: 0.50, stop_loss: 2.00, take_profit: 4.0, max_hold: 15 },
+        };
+
+        // Regex map for auto-detecting timeframe from the data frequency string
+        const TF_DETECT = [
+            { pattern: /(\d+)\s*sec/i,        tf: 'M1' },
+            { pattern: /(\d+)\s*min/i,         tf: null },  // dynamic
+            { pattern: /(\d+)\s*hour/i,        tf: null },  // dynamic
+            { pattern: /(\d+)\s*day/i,         tf: 'D1' },
+        ];
+
+        function detectTimeframe(timeframeStr) {
+            if (!timeframeStr) return 'M5'; // default
+            const s = timeframeStr.toLowerCase();
+
+            // Specific minute matches
+            const minMatch = s.match(/(\d+)\s*min/i);
+            if (minMatch) {
+                const m = parseInt(minMatch[1]);
+                if (m <= 1)  return 'M1';
+                if (m <= 5)  return 'M5';
+                if (m <= 15) return 'M15';
+                if (m <= 30) return 'M15';
+                return 'H1'; // 60 min = H1
+            }
+
+            const hourMatch = s.match(/(\d+)\s*hour/i);
+            if (hourMatch) {
+                const h = parseInt(hourMatch[1]);
+                if (h <= 1) return 'H1';
+                if (h <= 4) return 'H4';
+                return 'D1';
+            }
+
+            if (s.includes('day')) return 'D1';
+            return 'M5'; // default
+        }
+
+        function applyPreset(tf) {
+            const preset = PRESETS[tf];
+            if (!preset) return;
+
+            document.getElementById('lookback').value = preset.lookback;
+            document.getElementById('pred-len').value = preset.pred_len;
+            document.getElementById('step-size').value = preset.step_size;
+            document.getElementById('lookback-info').textContent = tf + ': ' + preset.lb_hint;
+            document.getElementById('pred-info').textContent = tf + ': ' + preset.pred_hint;
+
+            // Adaptive trading params
+            document.getElementById('signal-threshold').value = preset.entry_threshold;
+            document.getElementById('exit-threshold').value = preset.exit_threshold;
+            document.getElementById('stop-loss').value = preset.stop_loss;
+            document.getElementById('take-profit').value = preset.take_profit;
+            document.getElementById('max-hold').value = preset.max_hold;
+        }
 
         document.addEventListener('DOMContentLoaded', initializeApp);
 
@@ -364,6 +487,13 @@
                     document.getElementById('data-timeframe').textContent = di.timeframe;
                     showStatus('success', resp.data.message);
                     updateStartButton();
+
+                    // Auto-apply preset based on detected timeframe
+                    if (di.timeframe) {
+                        const tf = detectTimeframe(di.timeframe);
+                        applyPreset(tf);
+                        document.getElementById('preset-select').value = 'auto';
+                    }
                 } else {
                     showStatus('error', resp.data.error);
                 }
@@ -385,11 +515,18 @@
                 pred_len: parseInt(document.getElementById('pred-len').value),
                 step_size: parseInt(document.getElementById('step-size').value),
                 signal_threshold: parseFloat(document.getElementById('signal-threshold').value) / 100,
+                exit_threshold: parseFloat(document.getElementById('exit-threshold').value) / 100,
+                stop_loss_pct: parseFloat(document.getElementById('stop-loss').value) / 100,
+                take_profit_pct: parseFloat(document.getElementById('take-profit').value) / 100,
+                max_hold_bars: parseInt(document.getElementById('max-hold').value),
                 initial_capital: parseFloat(document.getElementById('initial-capital').value),
-                transaction_cost_pct: parseFloat(document.getElementById('transaction-cost').value) / 100,
+                commission_per_trade: parseFloat(document.getElementById('commission').value),
                 temperature: parseFloat(document.getElementById('temperature').value),
                 top_p: parseFloat(document.getElementById('top-p').value),
                 sample_count: parseInt(document.getElementById('sample-count').value),
+                batch_size: parseInt(document.getElementById('batch-size').value),
+                start_date: document.getElementById('backtest-start').value || null,
+                end_date: document.getElementById('backtest-end').value || null,
             };
 
             try {
@@ -521,7 +658,8 @@
                     t.price.toFixed(4),
                     t.shares.toFixed(2),
                     pnlVal,
-                    retPct + '%'
+                    retPct + '%',
+                    t.exit_reason || '-'
                 ];
 
                 cells.forEach(function(val, ci) {
@@ -571,6 +709,33 @@
             });
             document.getElementById('top-p').addEventListener('input', function() {
                 document.getElementById('top-p-value').textContent = this.value;
+            });
+
+            // Preset selector
+            document.getElementById('preset-select').addEventListener('change', function() {
+                const val = this.value;
+                if (val === 'auto') {
+                    // Re-detect from data
+                    if (currentDataInfo) {
+                        const tf = detectTimeframe(currentDataInfo.timeframe);
+                        applyPreset(tf);
+                    }
+                } else if (val === 'custom') {
+                    // Don't change values, let user edit freely
+                    document.getElementById('lookback-info').textContent = 'Custom';
+                    document.getElementById('pred-info').textContent = 'Custom';
+                } else {
+                    applyPreset(val);
+                }
+            });
+
+            // When user manually edits lookback/pred/step, switch to "custom"
+            ['lookback', 'pred-len', 'step-size'].forEach(function(id) {
+                document.getElementById(id).addEventListener('input', function() {
+                    document.getElementById('preset-select').value = 'custom';
+                    document.getElementById('lookback-info').textContent = 'Custom';
+                    document.getElementById('pred-info').textContent = 'Custom';
+                });
             });
         }
     </script>

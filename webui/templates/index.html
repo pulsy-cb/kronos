@@ -532,20 +532,36 @@
                         </div>
                     </div>
                     
-                    <small class="form-text">Drag slider to select time window position for 520 data points, green area represents fixed 400+120 data point range</small>
+                    <small class="form-text">Drag slider to select time window position for prediction data range</small>
+                </div>
+
+                <!-- Timeframe Preset -->
+                <div class="form-group">
+                    <label for="pred-preset-select">Timeframe Preset:</label>
+                    <select id="pred-preset-select">
+                        <option value="auto">Auto (detect from data)</option>
+                        <option value="M1">M1 — 1 min (lookback=480, pred=30)</option>
+                        <option value="M5">M5 — 5 min (lookback=400, pred=120)</option>
+                        <option value="M15">M15 — 15 min (lookback=400, pred=120)</option>
+                        <option value="H1">H1 — 1 hour (lookback=400, pred=48)</option>
+                        <option value="H4">H4 — 4 hours (lookback=200, pred=48)</option>
+                        <option value="D1">D1 — 1 day (lookback=200, pred=30)</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                    <small class="form-text">Adjusts lookback & prediction length for the detected timeframe</small>
                 </div>
 
                 <!-- Prediction Parameters -->
                 <div class="form-group">
                     <label for="lookback">Lookback Window Size:</label>
-                    <input type="number" id="lookback" value="400" readonly>
-                    <small class="form-text">Fixed at 400 data points</small>
+                    <input type="number" id="lookback" value="400" min="50" max="2048">
+                    <small class="form-text">Historical data points for context — <span id="pred-lookback-info">M5: ~1.4 days</span></small>
                 </div>
 
                 <div class="form-group">
                     <label for="pred-len">Prediction Length:</label>
-                    <input type="number" id="pred-len" value="120" readonly>
-                    <small class="form-text">Fixed at 120 data points</small>
+                    <input type="number" id="pred-len" value="120" min="10" max="512">
+                    <small class="form-text">Future steps to predict — <span id="pred-pred-info">M5: ~10 hours</span></small>
                 </div>
 
                 <!-- Prediction Quality Parameters -->
@@ -638,6 +654,48 @@
     </div>
 
     <script>
+        // Preset configurations for prediction page
+        const PRED_PRESETS = {
+            'M1':  { lookback: 480, pred_len: 30,  lb_hint: '~8 hours',  pred_hint: '~30 min' },
+            'M5':  { lookback: 400, pred_len: 120, lb_hint: '~1.4 days', pred_hint: '~10 hours' },
+            'M15': { lookback: 400, pred_len: 120, lb_hint: '~4 days',   pred_hint: '~30 hours' },
+            'H1':  { lookback: 400, pred_len: 48,  lb_hint: '~16 days',  pred_hint: '~2 days' },
+            'H4':  { lookback: 200, pred_len: 48,  lb_hint: '~33 days',  pred_hint: '~8 days' },
+            'D1':  { lookback: 200, pred_len: 30,  lb_hint: '~200 days', pred_hint: '~30 days' },
+        };
+
+        function detectTimeframe(timeframeStr) {
+            if (!timeframeStr) return 'M5';
+            var s = timeframeStr.toLowerCase();
+            var minMatch = s.match(/(\d+)\s*min/i);
+            if (minMatch) {
+                var m = parseInt(minMatch[1]);
+                if (m <= 1) return 'M1';
+                if (m <= 5) return 'M5';
+                if (m <= 15) return 'M15';
+                if (m <= 30) return 'M15';
+                return 'H1';
+            }
+            var hourMatch = s.match(/(\d+)\s*hour/i);
+            if (hourMatch) {
+                var h = parseInt(hourMatch[1]);
+                if (h <= 1) return 'H1';
+                if (h <= 4) return 'H4';
+                return 'D1';
+            }
+            if (s.indexOf('day') !== -1) return 'D1';
+            return 'M5';
+        }
+
+        function applyPredPreset(tf) {
+            var preset = PRED_PRESETS[tf];
+            if (!preset) return;
+            document.getElementById('lookback').value = preset.lookback;
+            document.getElementById('pred-len').value = preset.pred_len;
+            document.getElementById('pred-lookback-info').textContent = tf + ': ' + preset.lb_hint;
+            document.getElementById('pred-pred-info').textContent = tf + ': ' + preset.pred_hint;
+        }
+
         // Global variables
         let currentDataFile = null;
         let currentDataInfo = null;
@@ -799,7 +857,15 @@
                     currentDataInfo = response.data.data_info;
                     showDataInfo(response.data.data_info);
                     showStatus('success', response.data.message);
-                    
+
+                    // Auto-apply preset based on detected timeframe
+                    if (response.data.data_info && response.data.data_info.timeframe) {
+                        var tf = detectTimeframe(response.data.data_info.timeframe);
+                        applyPredPreset(tf);
+                        document.getElementById('pred-preset-select').value = 'auto';
+                        updateSliderFromInputs();
+                    }
+
                     // Update prediction button status
                     if (modelLoaded) {
                         document.getElementById('predict-btn').disabled = false;
@@ -1194,25 +1260,51 @@
         function setupEventListeners() {
             // Load model button
             document.getElementById('load-model-btn').addEventListener('click', loadModel);
-            
+
             // Load data button
             document.getElementById('load-data-btn').addEventListener('click', loadData);
-            
+
             // Prediction button
             document.getElementById('predict-btn').addEventListener('click', startPrediction);
-            
+
             // Prediction quality parameter sliders
             document.getElementById('temperature').addEventListener('input', function() {
                 document.getElementById('temperature-value').textContent = this.value;
             });
-            
+
             document.getElementById('top-p').addEventListener('input', function() {
                 document.getElementById('top-p-value').textContent = this.value;
             });
-            
+
             // Update slider when lookback window size changes
             document.getElementById('lookback').addEventListener('input', updateSliderFromInputs);
             document.getElementById('pred-len').addEventListener('input', updateSliderFromInputs);
+
+            // Preset selector
+            document.getElementById('pred-preset-select').addEventListener('change', function() {
+                var val = this.value;
+                if (val === 'auto') {
+                    if (currentDataInfo) {
+                        var tf = detectTimeframe(currentDataInfo.timeframe);
+                        applyPredPreset(tf);
+                    }
+                } else if (val === 'custom') {
+                    document.getElementById('pred-lookback-info').textContent = 'Custom';
+                    document.getElementById('pred-pred-info').textContent = 'Custom';
+                } else {
+                    applyPredPreset(val);
+                }
+                updateSliderFromInputs();
+            });
+
+            // When user manually edits lookback/pred-len, switch to custom
+            ['lookback', 'pred-len'].forEach(function(id) {
+                document.getElementById(id).addEventListener('input', function() {
+                    document.getElementById('pred-preset-select').value = 'custom';
+                    document.getElementById('pred-lookback-info').textContent = 'Custom';
+                    document.getElementById('pred-pred-info').textContent = 'Custom';
+                });
+            });
         }
 
         // Display status information

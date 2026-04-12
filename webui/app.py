@@ -748,11 +748,18 @@ def backtest_start():
         'pred_len': int(data.get('pred_len', 120)),
         'step_size': int(data.get('step_size', 60)),
         'signal_threshold': float(data.get('signal_threshold', 0.005)),
+        'exit_threshold': float(data.get('exit_threshold', 0.0025)),
         'initial_capital': float(data.get('initial_capital', 100000)),
-        'transaction_cost_pct': float(data.get('transaction_cost_pct', 0.001)),
+        'commission_per_trade': float(data.get('commission_per_trade', 0.07)),
         'temperature': float(data.get('temperature', 1.0)),
         'top_p': float(data.get('top_p', 0.9)),
         'sample_count': int(data.get('sample_count', 1)),
+        'start_date': data.get('start_date'),
+        'end_date': data.get('end_date'),
+        'batch_size': int(data.get('batch_size', 16)),
+        'stop_loss_pct': float(data.get('stop_loss_pct', 0.0)),
+        'take_profit_pct': float(data.get('take_profit_pct', 0.0)),
+        'max_hold_bars': int(data.get('max_hold_bars', 0)),
     }
 
     if len(df) < params['lookback'] + params['pred_len']:
@@ -832,6 +839,7 @@ def backtest_results():
             trade['return_pct'] = t['return_pct']
             trade['entry_price'] = t.get('entry_price')
             trade['entry_time'] = t.get('entry_time')
+            trade['exit_reason'] = t.get('exit_reason', 'signal')
         trades_json.append(trade)
 
     return jsonify({

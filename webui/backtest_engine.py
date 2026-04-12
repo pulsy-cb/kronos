@@ -16,6 +16,7 @@ class BacktestSession:
         self.df = df
         self.predictor = predictor
         self.params = params
+        self.batch_size = params.get("batch_size", 16)
         self.cancelled = False
         self.progress = 0.0
         self.status = "pending"
@@ -49,41 +50,53 @@ class BacktestSession:
         pred_len = params["pred_len"]
         step_size = params["step_size"]
         signal_threshold = params["signal_threshold"]
+        exit_threshold = params.get("exit_threshold", signal_threshold)
         initial_capital = params["initial_capital"]
-        transaction_cost_pct = params["transaction_cost_pct"]
+        commission_per_trade = params.get("commission_per_trade", 0.07)
         temperature = params["temperature"]
         top_p = params["top_p"]
         sample_count = params["sample_count"]
+        start_date = params.get("start_date")
+        end_date = params.get("end_date")
+
+        # Filter data by date range if specified
+        if start_date or end_date:
+            if "timestamps" in df.columns:
+                if start_date:
+                    start_dt = pd.to_datetime(start_date)
+                    df = df[df["timestamps"] >= start_dt]
+                if end_date:
+                    end_dt = pd.to_datetime(end_date)
+                    df = df[df["timestamps"] <= end_dt]
+            df = df.reset_index(drop=True)
+            if len(df) == 0:
+                raise ValueError("No data in the selected date range")
 
         required_data = lookback + pred_len
         if len(df) < required_data:
             raise ValueError(
-                f"Need at least {required_data} rows, got {len(df)}"
+                f"Need at least {required_data} rows in selected period, got {len(df)}"
             )
 
         max_start = len(df) - required_data
         starts = list(range(0, max_start + 1, step_size))
-        self.total_steps = len(starts)
 
         required_cols = ["open", "high", "low", "close"]
         if "volume" in df.columns:
             required_cols.append("volume")
 
-        signals = []
+        # ---------------------------------------------------------------
+        # Phase 1: Prepare all input windows for batched prediction
+        # ---------------------------------------------------------------
+        all_x_dfs = []
+        all_x_timestamps = []
+        all_y_timestamps = []
+        all_current_closes = []
+        all_current_timestamps = []
 
-        for step_i, idx in enumerate(starts):
-            if self.cancelled:
-                self.status = "cancelled"
-                return
-
-            self.current_step = step_i + 1
-            self.progress = self.current_step / self.total_steps
-
-            # Extract lookback window
+        for idx in starts:
             x_df = df.iloc[idx : idx + lookback][required_cols].copy()
             x_timestamp = df.iloc[idx : idx + lookback]["timestamps"]
-
-            # Build future timestamps
             y_timestamp = df.iloc[idx + lookback : idx + lookback + pred_len][
                 "timestamps"
             ]
@@ -93,29 +106,91 @@ class BacktestSession:
             if isinstance(y_timestamp, pd.DatetimeIndex):
                 y_timestamp = pd.Series(y_timestamp, name="timestamps")
 
-            # Run prediction
-            pred_df = self.predictor.predict(
-                df=x_df,
-                x_timestamp=x_timestamp,
-                y_timestamp=y_timestamp,
-                pred_len=pred_len,
-                T=temperature,
-                top_p=top_p,
-                sample_count=sample_count,
-            )
-
-            # Generate signal
             current_close = float(df.iloc[idx + lookback - 1]["close"])
-            predicted_end_close = float(pred_df.iloc[-1]["close"])
-            predicted_return = (
-                predicted_end_close - current_close
-            ) / current_close
-
             current_timestamp = df.iloc[idx + lookback - 1]["timestamps"]
+
+            all_x_dfs.append(x_df)
+            all_x_timestamps.append(x_timestamp)
+            all_y_timestamps.append(y_timestamp)
+            all_current_closes.append(current_close)
+            all_current_timestamps.append(current_timestamp)
+
+        total_windows = len(starts)
+        self.total_steps = total_windows
+        self.current_step = 0
+
+        # ---------------------------------------------------------------
+        # Phase 2: Batched prediction using predict_batch
+        # ---------------------------------------------------------------
+        all_predictions = [None] * total_windows
+        batch_size = self.batch_size
+        use_batch = hasattr(self.predictor, 'predict_batch')
+
+        if use_batch:
+            batch_idx = 0
+            while batch_idx < total_windows:
+                if self.cancelled:
+                    self.status = "cancelled"
+                    return
+
+                end_idx = min(batch_idx + batch_size, total_windows)
+                batch_dfs = all_x_dfs[batch_idx:end_idx]
+                batch_x_ts = all_x_timestamps[batch_idx:end_idx]
+                batch_y_ts = all_y_timestamps[batch_idx:end_idx]
+
+                pred_dfs = self.predictor.predict_batch(
+                    df_list=batch_dfs,
+                    x_timestamp_list=batch_x_ts,
+                    y_timestamp_list=batch_y_ts,
+                    pred_len=pred_len,
+                    T=temperature,
+                    top_p=top_p,
+                    sample_count=sample_count,
+                    verbose=False,
+                )
+
+                for i, pred_df in enumerate(pred_dfs):
+                    all_predictions[batch_idx + i] = pred_df
+
+                batch_idx = end_idx
+                self.current_step = end_idx
+                self.progress = end_idx / total_windows
+        else:
+            # Fallback: sequential prediction (original behavior)
+            for step_i in range(total_windows):
+                if self.cancelled:
+                    self.status = "cancelled"
+                    return
+
+                pred_df = self.predictor.predict(
+                    df=all_x_dfs[step_i],
+                    x_timestamp=all_x_timestamps[step_i],
+                    y_timestamp=all_y_timestamps[step_i],
+                    pred_len=pred_len,
+                    T=temperature,
+                    top_p=top_p,
+                    sample_count=sample_count,
+                )
+                all_predictions[step_i] = pred_df
+
+                self.current_step = step_i + 1
+                self.progress = self.current_step / total_windows
+
+        # ---------------------------------------------------------------
+        # Phase 3: Generate signals from predictions
+        # ---------------------------------------------------------------
+        signals = []
+
+        for step_i in range(total_windows):
+            pred_df = all_predictions[step_i]
+            current_close = all_current_closes[step_i]
+            predicted_end_close = float(pred_df.iloc[-1]["close"])
+            predicted_return = (predicted_end_close - current_close) / current_close
+            current_timestamp = all_current_timestamps[step_i]
 
             if predicted_return > signal_threshold:
                 signal_type = "long"
-            elif predicted_return < -signal_threshold:
+            elif predicted_return < -exit_threshold:
                 signal_type = "exit"
             else:
                 signal_type = "neutral"
@@ -136,7 +211,11 @@ class BacktestSession:
 
         # Simulate trades
         trade_results = self._simulate_trades(
-            df, signals, initial_capital, transaction_cost_pct
+            df, signals, initial_capital,
+            commission_per_trade=params.get("commission_per_trade", 0.07),
+            stop_loss_pct=params.get("stop_loss_pct", 0.0),
+            take_profit_pct=params.get("take_profit_pct", 0.0),
+            max_hold_bars=params.get("max_hold_bars", 0),
         )
 
         # Calculate metrics
@@ -159,11 +238,15 @@ class BacktestSession:
     # Trade simulation
     # ------------------------------------------------------------------
 
-    def _simulate_trades(self, df, signals, initial_capital, transaction_cost_pct):
+    def _simulate_trades(self, df, signals, initial_capital, commission_per_trade=0.07,
+                          stop_loss_pct=0.0, take_profit_pct=0.0, max_hold_bars=0):
+        # commission_per_trade = total round-trip commission (split 50/50 on buy/sell)
+        commission_per_side = commission_per_trade / 2.0
         capital = initial_capital
         position = 0.0
         entry_price = 0.0
         entry_time = None
+        entry_bar_idx = 0
         in_position = False
         peak_capital = initial_capital
 
@@ -173,41 +256,49 @@ class BacktestSession:
 
         signal_map = {s["timestamp"]: s for s in signals}
 
-        for _, row in df.iterrows():
+        for bar_idx, (_, row) in enumerate(df.iterrows()):
             ts = row["timestamps"]
             ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             close = float(row["close"])
+            high = float(row["high"])
+            low = float(row["low"])
 
             signal = signal_map.get(ts_str)
 
-            # Check for trade actions
-            if signal is not None:
-                if not in_position and signal["signal"] == "long":
-                    # Enter long
-                    cost = capital * transaction_cost_pct
-                    investable = capital - cost
-                    position = investable / close
-                    entry_price = close
-                    entry_time = ts_str
-                    capital = 0.0
-                    in_position = True
-                    trades.append(
-                        {
-                            "type": "buy",
-                            "timestamp": ts_str,
-                            "price": close,
-                            "shares": position,
-                        }
-                    )
+            # --- Check exit conditions when in position ---
+            if in_position:
+                exit_reason = None
 
-                elif in_position and signal["signal"] == "exit":
-                    # Exit position
+                # Stop-loss: check against bar low (intraday)
+                if stop_loss_pct > 0:
+                    low_return = (low - entry_price) / entry_price
+                    if low_return <= -stop_loss_pct:
+                        exit_reason = "stop_loss"
+                        # Use stop price, not close
+                        close = entry_price * (1 - stop_loss_pct)
+
+                # Take-profit: check against bar high (intraday)
+                if take_profit_pct > 0 and exit_reason is None:
+                    high_return = (high - entry_price) / entry_price
+                    if high_return >= take_profit_pct:
+                        exit_reason = "take_profit"
+                        close = entry_price * (1 + take_profit_pct)
+
+                # Max hold period
+                if max_hold_bars > 0 and exit_reason is None:
+                    bars_held = bar_idx - entry_bar_idx
+                    if bars_held >= max_hold_bars:
+                        exit_reason = "max_hold"
+
+                # Signal-based exit (EXIT signal from model)
+                if exit_reason is None and signal is not None and signal["signal"] == "exit":
+                    exit_reason = "signal"
+
+                # Execute exit
+                if exit_reason is not None:
                     gross = position * close
-                    cost = gross * transaction_cost_pct
-                    capital = gross - cost
-                    pnl = (close - entry_price) * position - (
-                        entry_price * position * transaction_cost_pct
-                    ) - (close * position * transaction_cost_pct)
+                    capital = gross - commission_per_side
+                    pnl = (close - entry_price) * position - commission_per_trade
                     return_pct = (close - entry_price) / entry_price
                     trades.append(
                         {
@@ -219,10 +310,29 @@ class BacktestSession:
                             "return_pct": return_pct,
                             "entry_price": entry_price,
                             "entry_time": entry_time,
+                            "exit_reason": exit_reason,
                         }
                     )
                     position = 0.0
                     in_position = False
+
+            # --- Check entry conditions when NOT in position ---
+            if not in_position and signal is not None and signal["signal"] == "long":
+                investable = capital - commission_per_side
+                position = investable / close
+                entry_price = close
+                entry_time = ts_str
+                entry_bar_idx = bar_idx
+                capital = 0.0
+                in_position = True
+                trades.append(
+                    {
+                        "type": "buy",
+                        "timestamp": ts_str,
+                        "price": close,
+                        "shares": position,
+                    }
+                )
 
             # Portfolio value
             portfolio_value = capital + (position * close if in_position else 0.0)
@@ -247,11 +357,8 @@ class BacktestSession:
             ts = df.iloc[-1]["timestamps"]
             ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             gross = position * close
-            cost = gross * transaction_cost_pct
-            capital = gross - cost
-            pnl = (close - entry_price) * position - (
-                entry_price * position * transaction_cost_pct
-            ) - (close * position * transaction_cost_pct)
+            capital = gross - commission_per_side
+            pnl = (close - entry_price) * position - commission_per_trade
             return_pct = (close - entry_price) / entry_price
             trades.append(
                 {
@@ -263,7 +370,7 @@ class BacktestSession:
                     "return_pct": return_pct,
                     "entry_price": entry_price,
                     "entry_time": entry_time,
-                    "forced_close": True,
+                    "exit_reason": "forced_close",
                 }
             )
             position = 0.0
