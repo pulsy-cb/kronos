@@ -76,7 +76,7 @@ def load_data_files():
     
     if os.path.exists(data_dir):
         for file in os.listdir(data_dir):
-            if file.endswith(('.csv', '.feather')):
+            if file.endswith(('.csv', '.feather', '.parquet')):
                 file_path = os.path.join(data_dir, file)
                 file_size = os.path.getsize(file_path)
                 data_files.append({
@@ -94,8 +94,10 @@ def load_data_file(file_path):
             df = pd.read_csv(file_path)
         elif file_path.endswith('.feather'):
             df = pd.read_feather(file_path)
+        elif file_path.endswith('.parquet'):
+            df = pd.read_parquet(file_path)
         else:
-            return None, "Unsupported file format"
+            return None, "Unsupported file format (use .csv, .feather, or .parquet)"
         
         # Check required columns
         required_cols = ['open', 'high', 'low', 'close']
