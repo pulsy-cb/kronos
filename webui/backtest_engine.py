@@ -16,7 +16,7 @@ class BacktestSession:
         self.df = df
         self.predictor = predictor
         self.params = params
-        self.batch_size = params.get("batch_size", 16)
+        self.batch_size = params.get("batch_size", 64)
         self.cancelled = False
         self.progress = 0.0
         self.status = "pending"

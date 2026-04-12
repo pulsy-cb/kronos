@@ -658,6 +658,20 @@ def load_model():
         # Load tokenizer and model
         tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
         model = Kronos.from_pretrained(model_config['model_id'])
+
+        # Move to device first, then compile for faster inference
+        tokenizer = tokenizer.to(device)
+        model = model.to(device)
+        model.eval()
+        tokenizer.eval()
+
+        # Compile models for optimized inference
+        if hasattr(torch, 'compile') and device != 'cpu':
+            try:
+                tokenizer = torch.compile(tokenizer)
+                model = torch.compile(model)
+            except Exception:
+                pass  # Fall back to uncompiled model
         
         # Create predictor
         predictor = KronosPredictor(model, tokenizer, device=device, max_context=model_config['context_length'])
