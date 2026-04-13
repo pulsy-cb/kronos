@@ -27,14 +27,14 @@ model_paths:
   pretrained_tokenizer: "NeoQuasar/Kronos-Tokenizer-base"
   pretrained_predictor: "NeoQuasar/Kronos-small"
   exp_name: "XAUUSD_M1"
-  base_path: "~/kronos/finetune_csv/finetuned/"
+  base_path: "/finetuned/"
   base_save_path: ""
   finetuned_tokenizer: ""
   tokenizer_save_name: "tokenizer"
   basemodel_save_name: "basemodel"
 
 experiment:
-  name: "xauusd_m1_finetune"
+  name: "xauusd_m1_finetune_5"
   description: "Finetune Kronos on XAUUSD 1-minute candlestick data"
   use_comet: false
   train_tokenizer: true

@@ -18,7 +18,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 sys.path.append("../")
 from model import KronosTokenizer
-from finetune_base_model import CustomKlineDataset
+from finetune_base_model import CustomKlineDataset, unwrap_model
 from config_loader import CustomFinetuneConfig
 
 
@@ -29,7 +29,7 @@ def set_seed(seed: int, rank: int = 0):
     torch.manual_seed(actual_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(actual_seed)
-        torch.backends.cudnn.deterministic = True
+        # cudnn deterministic removed for performance
         torch.backends.cudnn.benchmark = False
 
 
@@ -130,9 +130,11 @@ def create_dataloaders(config):
         num_workers=config.num_workers,
         pin_memory=True,
         drop_last=True,
-        sampler=train_sampler
+        sampler=train_sampler,
+        persistent_workers=config.num_workers > 0,
+        prefetch_factor=2 if config.num_workers > 0 else None,
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
@@ -140,7 +142,9 @@ def create_dataloaders(config):
         num_workers=config.num_workers,
         pin_memory=True,
         drop_last=False,
-        sampler=val_sampler
+        sampler=val_sampler,
+        persistent_workers=config.num_workers > 0,
+        prefetch_factor=2 if config.num_workers > 0 else None,
     )
     
     if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
@@ -215,7 +219,7 @@ def train_tokenizer(model, device, config, save_dir, logger):
                 batch_x = ori_batch_x[start_idx:end_idx]
 
                 with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
-                    zs, bsq_loss, _, _ = (model.module if use_ddp else model)(batch_x)
+                    zs, bsq_loss, _, _ = model(batch_x)
                     z_pre, z = zs
 
                     recon_loss_pre = F.mse_loss(z_pre, batch_x)
@@ -228,7 +232,7 @@ def train_tokenizer(model, device, config, save_dir, logger):
                 scaler.scale(loss_scaled).backward()
             
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_((model.module if use_ddp else model).parameters(), max_norm=2.0)
+            torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=2.0)
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
@@ -268,7 +272,7 @@ def train_tokenizer(model, device, config, save_dir, logger):
             for ori_batch_x, _ in val_loader:
                 ori_batch_x = ori_batch_x.squeeze(0).to(device, non_blocking=True)
                 with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
-                    zs, _, _, _ = (model.module if use_ddp else model)(ori_batch_x)
+                    zs, _, _, _ = model(ori_batch_x)
                     _, z = zs
                     val_loss_item = F.mse_loss(z, ori_batch_x)
                 
@@ -298,7 +302,7 @@ def train_tokenizer(model, device, config, save_dir, logger):
             if rank == 0:
                 model_save_path = os.path.join(save_dir, "best_model")
                 os.makedirs(model_save_path, exist_ok=True)
-                (model.module if use_ddp else model).save_pretrained(model_save_path)
+                unwrap_model(model).save_pretrained(model_save_path)
                 save_msg = f"Best model saved to: {model_save_path} (validation loss: {best_val_loss:.4f})"
                 logger.info(save_msg)
                 print(save_msg)

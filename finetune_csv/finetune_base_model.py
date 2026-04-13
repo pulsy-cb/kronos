@@ -23,9 +23,18 @@ from model import Kronos, KronosTokenizer, KronosPredictor
 from config_loader import CustomFinetuneConfig
 
 
+def unwrap_model(model):
+    """Unwrap model from DDP and/or torch.compile wrappers."""
+    if hasattr(model, 'module'):
+        model = model.module
+    if hasattr(model, '_orig_mod'):
+        model = model._orig_mod
+    return model
+
+
 class CustomKlineDataset(Dataset):
-    
-    def __init__(self, data_path, data_type='train', lookback_window=90, predict_window=10, 
+
+    def __init__(self, data_path, data_type='train', lookback_window=90, predict_window=10,
                  clip=5.0, seed=100, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
         self.data_path = data_path
         self.data_type = data_type
@@ -37,51 +46,52 @@ class CustomKlineDataset(Dataset):
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
         self.test_ratio = test_ratio
-        
+
         self.feature_list = ['open', 'high', 'low', 'close', 'volume', 'amount']
         self.time_feature_list = ['minute', 'hour', 'weekday', 'day', 'month']
-        
+
         self.py_rng = random.Random(seed)
-        
+
         self._load_and_preprocess_data()
         self._split_data_by_time()
-        
-        self.n_samples = len(self.data) - self.window + 1
-            
-        print(f"[{data_type.upper()}] Data length: {len(self.data)}, Available samples: {self.n_samples}")
-    
+        self._precompute_tensors()
+
+        self.n_samples = len(self.features_tensor) - self.window + 1
+
+        print(f"[{data_type.upper()}] Data length: {len(self.features_tensor)}, Available samples: {self.n_samples}")
+
     def _load_and_preprocess_data(self):
         if self.data_path.endswith('.parquet'):
             df = pd.read_parquet(self.data_path)
         else:
             df = pd.read_csv(self.data_path)
-        
+
         df['timestamps'] = pd.to_datetime(df['timestamps'])
         df = df.sort_values('timestamps').reset_index(drop=True)
-        
+
         self.timestamps = df['timestamps'].copy()
-        
+
         df['minute'] = df['timestamps'].dt.minute
         df['hour'] = df['timestamps'].dt.hour
         df['weekday'] = df['timestamps'].dt.weekday
         df['day'] = df['timestamps'].dt.day
         df['month'] = df['timestamps'].dt.month
-        
+
         self.data = df[self.feature_list + self.time_feature_list].copy()
-        
+
         if self.data.isnull().any().any():
             print("Warning: Missing values found in data, performing forward fill")
             self.data = self.data.fillna(method='ffill')
-        
+
         print(f"Original data time range: {self.timestamps.min()} to {self.timestamps.max()}")
         print(f"Original data total length: {len(df)} records")
-    
+
     def _split_data_by_time(self):
         total_length = len(self.data)
-        
+
         train_end = int(total_length * self.train_ratio)
         val_end = int(total_length * (self.train_ratio + self.val_ratio))
-        
+
         if self.data_type == 'train':
             self.data = self.data.iloc[:train_end].copy()
             self.timestamps = self.timestamps.iloc[:train_end].copy()
@@ -97,43 +107,57 @@ class CustomKlineDataset(Dataset):
             self.timestamps = self.timestamps.iloc[val_end:].copy()
             print(f"[{self.data_type.upper()}] Test set: after time point {val_end+1}")
             print(f"[{self.data_type.upper()}] Test set time range: {self.timestamps.min()} to {self.timestamps.max()}")
-        
+
         print(f"[{self.data_type.upper()}] Data length after split: {len(self.data)} records")
-    
+
+    def _precompute_tensors(self):
+        """Pre-convert data to tensors and pre-compute global stats for fast __getitem__."""
+        features_np = self.data[self.feature_list].values.astype(np.float32)
+        time_features_np = self.data[self.time_feature_list].values.astype(np.float32)
+
+        self.features_tensor = torch.from_numpy(features_np)
+        self.time_features_tensor = torch.from_numpy(time_features_np)
+
+        # Pre-compute rolling window mean/std for normalization
+        # Using global stats as fast approximation (per-window stats computed below)
+        self.global_mean = self.features_tensor.mean(dim=0)
+        self.global_std = self.features_tensor.std(dim=0) + 1e-5
+
+        del self.data  # Free memory - no longer needed
+
+        print(f"[{self.data_type.upper()}] Pre-computed tensors: features {self.features_tensor.shape}, time_features {self.time_features_tensor.shape}")
+
     def set_epoch_seed(self, epoch):
         epoch_seed = self.seed + epoch
         self.py_rng.seed(epoch_seed)
         self.current_epoch = epoch
-    
+
     def __len__(self):
         return self.n_samples
-    
+
     def __getitem__(self, idx):
-        max_start = len(self.data) - self.window
+        max_start = len(self.features_tensor) - self.window
         if max_start <= 0:
             raise ValueError("Data length insufficient to create samples")
-        
+
         if self.data_type == 'train':
             epoch = getattr(self, 'current_epoch', 0)
             start_idx = (idx * 9973 + (epoch + 1) * 104729) % (max_start + 1)
         else:
             start_idx = idx % (max_start + 1)
-        
+
         end_idx = start_idx + self.window
-        
-        window_data = self.data.iloc[start_idx:end_idx]
-        
-        x = window_data[self.feature_list].values.astype(np.float32)
-        x_stamp = window_data[self.time_feature_list].values.astype(np.float32)
-        
-        x_mean, x_std = np.mean(x, axis=0), np.std(x, axis=0)
-        x = (x - x_mean) / (x_std + 1e-5)
-        x = np.clip(x, -self.clip, self.clip)
-        
-        x_tensor = torch.from_numpy(x)
-        x_stamp_tensor = torch.from_numpy(x_stamp)
-        
-        return x_tensor, x_stamp_tensor
+
+        x = self.features_tensor[start_idx:end_idx]
+        x_stamp = self.time_features_tensor[start_idx:end_idx]
+
+        # Per-window normalization (kept for quality, but now on tensors - much faster)
+        x_mean = x.mean(dim=0)
+        x_std = x.std(dim=0) + 1e-5
+        x = (x - x_mean) / x_std
+        x = x.clamp(-self.clip, self.clip)
+
+        return x, x_stamp
 
 
 
@@ -221,9 +245,11 @@ def create_dataloaders(config):
         num_workers=config.num_workers,
         pin_memory=True,
         drop_last=True,
-        sampler=train_sampler
+        sampler=train_sampler,
+        persistent_workers=config.num_workers > 0,
+        prefetch_factor=2 if config.num_workers > 0 else None,
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
@@ -231,7 +257,9 @@ def create_dataloaders(config):
         num_workers=config.num_workers,
         pin_memory=True,
         drop_last=False,
-        sampler=val_sampler
+        sampler=val_sampler,
+        persistent_workers=config.num_workers > 0,
+        prefetch_factor=2 if config.num_workers > 0 else None,
     )
     
     if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
@@ -308,13 +336,13 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
             token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
             with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
-                logits = (model.module if use_ddp else model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-                loss, s1_loss, s2_loss = (model.module if use_ddp else model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+                logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                loss, s1_loss, s2_loss = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
             optimizer.zero_grad()
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_((model.module if use_ddp else model).parameters(), max_norm=3.0)
+            torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=3.0)
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
@@ -353,8 +381,8 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
                 token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
                 with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
-                    logits = (model.module if use_ddp else model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-                    loss, _, _ = (model.module if use_ddp else model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+                    logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                    loss, _, _ = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
                 
                 val_loss += loss.item()
                 val_batches += 1
@@ -386,7 +414,7 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
             if rank == 0:
                 model_save_path = os.path.join(save_dir, "best_model")
                 os.makedirs(model_save_path, exist_ok=True)
-                (model.module if use_ddp else model).save_pretrained(model_save_path)
+                unwrap_model(model).save_pretrained(model_save_path)
                 save_msg = f"Best model saved to: {model_save_path} (validation loss: {best_val_loss:.4f})"
                 logger.info(save_msg)
                 print(save_msg)
@@ -476,7 +504,15 @@ def main():
     
     tokenizer = tokenizer.to(device)
     model = model.to(device)
-    
+
+    # Enable cudnn benchmark for faster convolutions on fixed-size inputs
+    torch.backends.cudnn.benchmark = True
+
+    # Compile model for optimized execution
+    if hasattr(torch, 'compile'):
+        print("Compiling model with torch.compile()...")
+        model = torch.compile(model)
+
     model_size = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {model_size:,}")
     print(f"Model parameters: {model_size:,}")

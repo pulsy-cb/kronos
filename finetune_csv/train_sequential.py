@@ -12,7 +12,7 @@ from model import Kronos, KronosTokenizer, KronosPredictor
 
 from config_loader import CustomFinetuneConfig
 from finetune_tokenizer import train_tokenizer, set_seed, setup_logging as setup_tokenizer_logging
-from finetune_base_model import train_model, create_dataloaders, setup_logging as setup_basemodel_logging
+from finetune_base_model import train_model, create_dataloaders, setup_logging as setup_basemodel_logging, unwrap_model
 
 
 class SequentialTrainer:
@@ -109,7 +109,13 @@ class SequentialTrainer:
                 group_size=arch.get('group_size', 4)
             )
         tokenizer = tokenizer.to(self.device)
-        
+
+        # Compile tokenizer for optimized execution
+        if hasattr(torch, 'compile'):
+            if self.rank == 0:
+                print("Compiling tokenizer with torch.compile()...")
+            tokenizer = torch.compile(tokenizer)
+
         model_size = sum(p.numel() for p in tokenizer.parameters())
         logger.info(f"Tokenizer parameters: {model_size:,}")
         if self.rank == 0:
@@ -223,7 +229,13 @@ class SequentialTrainer:
                 learn_te=arch.get('learn_te', True)
             )
         model = model.to(self.device)
-        
+
+        # Compile model for optimized execution
+        if hasattr(torch, 'compile'):
+            if self.rank == 0:
+                print("Compiling model with torch.compile()...")
+            model = torch.compile(model)
+
         model_size = sum(p.numel() for p in model.parameters())
         logger.info(f"Model parameters: {model_size:,}")
         if self.rank == 0:

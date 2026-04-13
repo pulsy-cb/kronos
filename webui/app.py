@@ -4,6 +4,7 @@ import threading
 import pandas as pd
 import numpy as np
 import json
+import torch
 import plotly.graph_objects as go
 import plotly.utils
 from flask import Flask, render_template, request, jsonify
@@ -664,6 +665,22 @@ def load_model():
         model_config = AVAILABLE_MODELS[model_key]
 
         # Load tokenizer and model
+        tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
+        model = Kronos.from_pretrained(model_config['model_id'])
+
+        # Move to device first, then compile for faster inference
+        tokenizer = tokenizer.to(device)
+        model = model.to(device)
+        model.eval()
+        tokenizer.eval()
+
+        # Compile models for optimized inference
+        if hasattr(torch, 'compile') and device != 'cpu':
+            try:
+                tokenizer = torch.compile(tokenizer)
+                model = torch.compile(model)
+            except Exception:
+                pass  # Fall back to uncompiled model
         if 'model_path' in model_config:
             # Load from local path (fine-tuned model)
             model_path = model_config['model_path']
