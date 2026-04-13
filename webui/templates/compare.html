@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Comparison - Kronos</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
+        .header { text-align: center; margin-bottom: 30px; color: white; }
+        .header h1 { font-size: 2.5rem; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
+        .header p { font-size: 1.1rem; opacity: 0.9; }
+        .header nav { margin-bottom: 15px; }
+        .header nav a { color: rgba(255,255,255,0.7); text-decoration: none; margin: 0 15px; font-size: 1rem; transition: color 0.2s; }
+        .header nav a:hover, .header nav a.active { color: white; font-weight: 600; }
+
+        .main-content { display: grid; grid-template-columns: 1fr 2.5fr; gap: 30px; }
+
+        .control-panel {
+            background: white; border-radius: 15px; padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2); height: fit-content;
+        }
+        .control-panel h2 { color: #4a5568; margin-bottom: 20px; font-size: 1.3rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
+        .control-panel h3 { color: #4a5568; margin: 15px 0 10px; font-size: 1rem; }
+
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 6px; font-weight: 600; color: #4a5568; font-size: 0.9rem; }
+        .form-group select, .form-group input {
+            width: 100%; padding: 10px; border: 2px solid #e2e8f0;
+            border-radius: 8px; font-size: 13px; transition: border-color 0.3s;
+        }
+        .form-group select:focus, .form-group input:focus { outline: none; border-color: #667eea; }
+
+        .model-slot {
+            background: #f7fafc; border: 2px dashed #cbd5e0; border-radius: 10px;
+            padding: 15px; margin-bottom: 12px; transition: border-color 0.3s;
+        }
+        .model-slot.filled { border-color: #48bb78; border-style: solid; background: #f0fff4; }
+        .model-slot .slot-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .model-slot .slot-title { font-weight: 700; color: #2d3748; font-size: 0.95rem; }
+        .model-slot .slot-status { font-size: 0.75rem; padding: 2px 8px; border-radius: 10px; }
+        .model-slot .slot-status.empty { background: #e2e8f0; color: #718096; }
+        .model-slot .slot-status.loaded { background: #c6f6d5; color: #22543d; }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; border: none; padding: 10px 20px; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s; width: 100%; margin-bottom: 8px;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .btn-secondary { background: linear-gradient(135deg, #718096 0%, #4a5568 100%); }
+        .btn-success { background: linear-gradient(135deg, #48bb78 0%, #38a169 100%); }
+
+        .status { padding: 12px; border-radius: 8px; margin-bottom: 15px; font-weight: 500; font-size: 0.85rem; }
+        .status.success { background: #c6f6d5; color: #22543d; border: 1px solid #9ae6b4; }
+        .status.error { background: #fed7d7; color: #742a2a; border: 1px solid #feb2b2; }
+        .status.info { background: #bee3f8; color: #2a4365; border: 1px solid #90cdf4; }
+        .status.warning { background: #fef5e7; color: #744210; border: 1px solid #fbd38d; }
+
+        .progress-bar-container { width: 100%; height: 20px; background: #e2e8f0; border-radius: 10px; overflow: hidden; margin: 10px 0; }
+        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #48bb78, #667eea); transition: width 0.3s; border-radius: 10px; }
+        .progress-text { font-size: 12px; color: #4a5568; margin-top: 4px; }
+
+        .results-container { background: white; border-radius: 15px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+        .results-container h2 { color: #4a5568; margin-bottom: 20px; font-size: 1.3rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
+
+        .placeholder-text { text-align: center; color: #a0aec0; padding: 60px 20px; font-size: 1.1rem; }
+
+        .comparison-table-wrapper { overflow-x: auto; margin-bottom: 25px; }
+        .comparison-table { width: 100%; border-collapse: collapse; min-width: 600px; }
+        .comparison-table th, .comparison-table td { border: 1px solid #e2e8f0; padding: 12px 8px; text-align: center; font-size: 13px; }
+        .comparison-table th { background: #f7fafc; font-weight: 600; position: sticky; top: 0; }
+        .comparison-table th.model-col { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .comparison-table td.positive { color: #38a169; font-weight: 600; background: #f0fff4; }
+        .comparison-table td.negative { color: #e53e3e; font-weight: 600; background: #fff5f5; }
+        .comparison-table td.neutral { color: #718096; }
+        .comparison-table td.best { background: #ebf8ff; font-weight: 700; border: 2px solid #4299e1; }
+
+        .model-results-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 25px; }
+        .model-result-card {
+            background: #f7fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px;
+            transition: border-color 0.3s;
+        }
+        .model-result-card.rank-1 { border-color: #ffd700; }
+        .model-result-card.rank-2 { border-color: #c0c0c0; }
+        .model-result-card.rank-3 { border-color: #cd7f32; }
+        .model-result-card h4 { color: #2d3748; margin-bottom: 15px; font-size: 1.1rem; }
+        .model-result-card .metrics-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .model-result-card .metric-mini { background: white; padding: 10px; border-radius: 8px; text-align: center; }
+        .model-result-card .metric-mini .value { font-size: 1.1rem; font-weight: 700; }
+        .model-result-card .metric-mini .label { font-size: 0.75rem; color: #718096; margin-top: 2px; }
+
+        .chart-wrapper { margin-bottom: 25px; }
+        .chart-wrapper h3 { color: #4a5568; margin-bottom: 10px; font-size: 1.1rem; }
+
+        .model-equity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .model-equity-card { background: #f7fafc; border-radius: 10px; padding: 15px; }
+        .model-equity-card h4 { font-size: 0.95rem; color: #2d3748; margin-bottom: 10px; }
+        .model-equity-card .equity-chart { height: 180px; }
+
+        .slot-model-btn {
+            padding: 6px 10px; border: 2px solid #e2e8f0; border-radius: 8px;
+            background: white; font-size: 0.8rem; cursor: pointer; transition: all 0.2s;
+            display: inline-block; margin: 3px;
+        }
+        .slot-model-btn:hover { border-color: #667eea; }
+        .slot-model-btn.active { background: #667eea; color: white; border-color: #667eea; }
+
+        .loading { display: none; text-align: center; padding: 20px; }
+        .loading.show { display: block; }
+        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 10px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        @media (max-width: 1024px) {
+            .main-content { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <nav>
+                <a href="/">Prediction</a>
+                <a href="/backtest">Backtest</a>
+                <a href="/compare" class="active">Compare Models</a>
+            </nav>
+            <h1>Model Comparison</h1>
+            <p>Compare up to 3 models on the same data</p>
+        </div>
+
+        <div class="main-content">
+            <div class="control-panel">
+                <h2>Compare Configuration</h2>
+
+                <h3>Select Models (up to 3)</h3>
+                <div id="model-slot-0" class="model-slot">
+                    <div class="slot-header">
+                        <span class="slot-title">Model 1</span>
+                        <span class="slot-status empty">Not Selected</span>
+                    </div>
+                    <div class="slot-models" id="slot-models-0"></div>
+                    <div class="slot-info" id="slot-info-0"></div>
+                </div>
+                <div id="model-slot-1" class="model-slot">
+                    <div class="slot-header">
+                        <span class="slot-title">Model 2</span>
+                        <span class="slot-status empty">Not Selected</span>
+                    </div>
+                    <div class="slot-models" id="slot-models-1"></div>
+                    <div class="slot-info" id="slot-info-1"></div>
+                </div>
+                <div id="model-slot-2" class="model-slot">
+                    <div class="slot-header">
+                        <span class="slot-title">Model 3</span>
+                        <span class="slot-status empty">Not Selected</span>
+                    </div>
+                    <div class="slot-models" id="slot-models-2"></div>
+                    <div class="slot-info" id="slot-info-2"></div>
+                </div>
+
+                <button id="load-models-btn" class="btn btn-secondary">Load Selected Models</button>
+                <div id="models-status" class="status info" style="display:none;"></div>
+
+                <hr style="margin: 20px 0; border: 1px solid #e2e8f0;">
+
+                <h3>Data Configuration</h3>
+                <div class="form-group">
+                    <label for="data-file-select">Data File:</label>
+                    <select id="data-file-select"><option value="">Select data file</option></select>
+                </div>
+                <button id="load-data-btn" class="btn btn-secondary">Load Data</button>
+                <div id="data-info" class="status info" style="display:none;"></div>
+
+                <div class="form-group" style="margin-top:15px;">
+                    <label for="backtest-start">Start Date:</label>
+                    <input type="date" id="backtest-start">
+                    <small class="form-text" style="color:#718096;font-size:0.75rem;">Leave empty to use full data from start</small>
+                </div>
+                <div class="form-group">
+                    <label for="backtest-end">End Date:</label>
+                    <input type="date" id="backtest-end">
+                    <small class="form-text" style="color:#718096;font-size:0.75rem;">Leave empty to use full data until end</small>
+                </div>
+
+                <hr style="margin: 20px 0; border: 1px solid #e2e8f0;">
+
+                <h3>Backtest Parameters</h3>
+                <div class="form-group">
+                    <label for="lookback">Lookback:</label>
+                    <input type="number" id="lookback" value="480" min="50" max="2048">
+                </div>
+                <div class="form-group">
+                    <label for="pred-len">Prediction Length:</label>
+                    <input type="number" id="pred-len" value="30" min="10" max="512">
+                </div>
+                <div class="form-group">
+                    <label for="step-size">Step Size:</label>
+                    <input type="number" id="step-size" value="30" min="10" max="500">
+                </div>
+                <div class="form-group">
+                    <label for="signal-threshold">Entry Threshold (%):</label>
+                    <input type="number" id="signal-threshold" value="0.5" min="0.01" max="10" step="0.01">
+                </div>
+                <div class="form-group">
+                    <label for="exit-threshold">Exit Threshold (%):</label>
+                    <input type="number" id="exit-threshold" value="0.25" min="0.01" max="10" step="0.01">
+                </div>
+                <div class="form-group">
+                    <label for="stop-loss">Stop-Loss (%):</label>
+                    <input type="number" id="stop-loss" value="0.15" min="0" max="10" step="0.01">
+                </div>
+                <div class="form-group">
+                    <label for="take-profit">Take-Profit (%):</label>
+                    <input type="number" id="take-profit" value="0.3" min="0" max="20" step="0.01">
+                </div>
+                <div class="form-group">
+                    <label for="max-hold">Max Hold (bars):</label>
+                    <input type="number" id="max-hold" value="0" min="0" max="99999" step="1">
+                </div>
+                <div class="form-group">
+                    <label for="initial-capital">Initial Capital:</label>
+                    <input type="number" id="initial-capital" value="100000" min="1000">
+                </div>
+                <div class="form-group">
+                    <label for="temperature">Temperature:</label>
+                    <input type="range" id="temperature" value="1.0" min="0.1" max="2.0" step="0.1">
+                    <span id="temperature-value">1.0</span>
+                </div>
+                <div class="form-group">
+                    <label for="top-p">Top-p:</label>
+                    <input type="range" id="top-p" value="0.9" min="0.1" max="1.0" step="0.05">
+                    <span id="top-p-value">0.9</span>
+                </div>
+                <div class="form-group">
+                    <label for="sample-count">Sample Count:</label>
+                    <input type="number" id="sample-count" value="1" min="1" max="5">
+                </div>
+                <div class="form-group">
+                    <label for="batch-size">Batch Size:</label>
+                    <input type="number" id="batch-size" value="16" min="1" max="128">
+                </div>
+
+                <button id="run-comparison-btn" class="btn btn-success" disabled>Run Comparison</button>
+
+                <div id="progress-section" style="display:none; margin-top:15px;">
+                    <div class="progress-bar-container">
+                        <div class="progress-bar-fill" id="progress-fill"></div>
+                    </div>
+                    <div class="progress-text" id="progress-text">Initializing...</div>
+                </div>
+
+                <div id="loading" class="loading">
+                    <div class="spinner"></div>
+                    <p>Processing...</p>
+                </div>
+            </div>
+
+            <div class="results-container">
+                <h2>Comparison Results</h2>
+                <div id="placeholder" class="placeholder-text">
+                    Load models and data, then run comparison to see results here.
+                </div>
+
+                <div id="results" style="display:none;">
+                    <div id="best-model-banner" style="text-align:center; padding:20px; background:#ebf8ff; border-radius:12px; margin-bottom:20px;">
+                        <h3 id="best-model-text" style="color:#2b6cb0;"></h3>
+                    </div>
+
+                    <div class="comparison-table-wrapper">
+                        <table class="comparison-table" id="comparison-table">
+                            <thead>
+                                <tr>
+                                    <th>Metric</th>
+                                    <th class="model-col" id="th-model-0">Model 1</th>
+                                    <th class="model-col" id="th-model-1">Model 2</th>
+                                    <th class="model-col" id="th-model-2">Model 3</th>
+                                </tr>
+                            </thead>
+                            <tbody id="comparison-tbody"></tbody>
+                        </table>
+                    </div>
+
+                    <div class="model-results-grid" id="model-cards"></div>
+
+                    <div class="chart-wrapper">
+                        <h3>Equity Curves Comparison</h3>
+                        <div id="equity-comparison-chart" style="width:100%;height:400px;"></div>
+                    </div>
+
+                    <div class="chart-wrapper">
+                        <h3>Individual Equity Curves</h3>
+                        <div class="model-equity-grid" id="equity-cards"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        var MAX_MODELS = 3;
+        var availableModels = {};
+        var selectedModels = [null, null, null];
+        var loadedModels = [null, null, null];
+        var currentDataFile = null;
+        var comparisonResults = null;
+        var progressInterval = null;
+
+        var MODEL_COLORS = ['#667eea', '#48bb78', '#ed8936'];
+
+        document.addEventListener('DOMContentLoaded', init);
+
+        async function init() {
+            await loadAvailableModels();
+            await loadDataFiles();
+            setupEventListeners();
+        }
+
+        async function loadAvailableModels() {
+            try {
+                var resp = await axios.get('/api/available-models');
+                if (resp.data.model_available) {
+                    availableModels = resp.data.models;
+                    populateModelSlots();
+                }
+            } catch (e) {
+                showStatus('models-status', 'error', 'Failed to load models');
+            }
+        }
+
+        function populateModelSlots() {
+            var modelKeys = Object.keys(availableModels);
+            for (var slot = 0; slot < MAX_MODELS; slot++) {
+                var container = document.getElementById('slot-models-' + slot);
+                container.innerHTML = '';
+                modelKeys.forEach(function(key) {
+                    var m = availableModels[key];
+                    var btn = document.createElement('button');
+                    btn.className = 'slot-model-btn';
+                    btn.dataset.key = key;
+                    btn.textContent = m.name;
+                    btn.title = m.description;
+                    btn.addEventListener('click', (function(s, k) {
+                        return function() { selectModel(s, k); };
+                    })(slot, key));
+                    container.appendChild(btn);
+                });
+            }
+        }
+
+        function selectModel(slot, modelKey) {
+            var m = availableModels[modelKey];
+            var wasSelected = selectedModels[slot] === modelKey;
+
+            if (wasSelected) {
+                selectedModels[slot] = null;
+                updateSlotUI(slot);
+                return;
+            }
+
+            var otherSlot = selectedModels.indexOf(modelKey);
+            if (otherSlot !== -1) {
+                showStatus('models-status', 'warning', m.name + ' is already selected in slot ' + (otherSlot + 1));
+                return;
+            }
+
+            selectedModels[slot] = modelKey;
+            updateSlotUI(slot);
+        }
+
+        function updateSlotUI(slot) {
+            var modelKey = selectedModels[slot];
+            var slotEl = document.getElementById('model-slot-' + slot);
+            var statusEl = slotEl.querySelector('.slot-status');
+            var infoEl = document.getElementById('slot-info-' + slot);
+            var btns = slotEl.querySelectorAll('.slot-model-btn');
+
+            btns.forEach(function(btn) {
+                btn.classList.toggle('active', btn.dataset.key === modelKey);
+            });
+
+            if (modelKey) {
+                var m = availableModels[modelKey];
+                slotEl.classList.add('filled');
+                statusEl.className = 'slot-status loaded';
+                statusEl.textContent = m.name;
+                infoEl.textContent = m.params + ' | Context: ' + m.context_length;
+            } else {
+                slotEl.classList.remove('filled');
+                statusEl.className = 'slot-status empty';
+                statusEl.textContent = 'Not Selected';
+                infoEl.textContent = '';
+            }
+
+            updateLoadButton();
+        }
+
+        function updateLoadButton() {
+            var hasSelection = selectedModels.some(function(m) { return m !== null; });
+            document.getElementById('load-models-btn').disabled = !hasSelection;
+        }
+
+        async function loadModels() {
+            var selected = selectedModels.filter(function(m) { return m !== null; });
+            if (selected.length === 0) {
+                showStatus('models-status', 'error', 'Select at least one model');
+                return;
+            }
+
+            showLoading(true);
+            document.getElementById('load-models-btn').disabled = true;
+            loadedModels = [null, null, null];
+
+            for (var slot = 0; slot < MAX_MODELS; slot++) {
+                var modelKey = selectedModels[slot];
+                if (!modelKey) continue;
+
+                try {
+                    var resp = await axios.post('/api/compare/load-model', {
+                        model_key: modelKey,
+                        device: 'cuda'
+                    });
+                    if (resp.data.success) {
+                        loadedModels[slot] = modelKey;
+                    }
+                } catch (e) {
+                    console.error('Failed to load model ' + modelKey + ':', e);
+                }
+            }
+
+            showLoading(false);
+            document.getElementById('load-models-btn').disabled = false;
+
+            var loadedCount = loadedModels.filter(function(m) { return m !== null; }).length;
+            if (loadedCount > 0) {
+                showStatus('models-status', 'success', loadedCount + ' model(s) loaded successfully');
+            } else {
+                showStatus('models-status', 'error', 'Failed to load any model');
+            }
+
+            updateRunButton();
+        }
+
+        async function loadDataFiles() {
+            try {
+                var resp = await axios.get('/api/data-files');
+                var sel = document.getElementById('data-file-select');
+                sel.innerHTML = '<option value="">Select data file</option>';
+                resp.data.forEach(function(f) {
+                    var opt = document.createElement('option');
+                    opt.value = f.path;
+                    opt.textContent = f.name + ' (' + f.size + ')';
+                    sel.appendChild(opt);
+                });
+            } catch (e) {
+                showStatus('models-status', 'error', 'Failed to load data files');
+            }
+        }
+
+        async function loadData() {
+            var filePath = document.getElementById('data-file-select').value;
+            if (!filePath) {
+                showStatus('models-status', 'error', 'Select a data file');
+                return;
+            }
+
+            try {
+                showLoading(true);
+                var resp = await axios.post('/api/load-data', { file_path: filePath });
+                if (resp.data.success) {
+                    currentDataFile = filePath;
+                    var di = resp.data.data_info;
+                    var dataInfoEl = document.getElementById('data-info');
+                    dataInfoEl.style.display = 'block';
+                    dataInfoEl.className = 'status success';
+                    dataInfoEl.textContent = 'Data loaded: ' + di.rows + ' rows, ' + di.timeframe;
+                }
+            } catch (e) {
+                showStatus('models-status', 'error', 'Failed to load data');
+            } finally {
+                showLoading(false);
+            }
+
+            updateRunButton();
+        }
+
+        function updateRunButton() {
+            var hasModels = loadedModels.some(function(m) { return m !== null; });
+            var hasData = currentDataFile !== null;
+            document.getElementById('run-comparison-btn').disabled = !(hasModels && hasData);
+        }
+
+        async function runComparison() {
+            var activeSlots = [];
+            for (var i = 0; i < MAX_MODELS; i++) {
+                if (loadedModels[i] !== null) activeSlots.push(i);
+            }
+            if (activeSlots.length === 0) return;
+
+            var params = {
+                file_path: currentDataFile,
+                lookback: parseInt(document.getElementById('lookback').value),
+                pred_len: parseInt(document.getElementById('pred-len').value),
+                step_size: parseInt(document.getElementById('step-size').value),
+                signal_threshold: parseFloat(document.getElementById('signal-threshold').value) / 100,
+                exit_threshold: parseFloat(document.getElementById('exit-threshold').value) / 100,
+                stop_loss_pct: parseFloat(document.getElementById('stop-loss').value) / 100,
+                take_profit_pct: parseFloat(document.getElementById('take-profit').value) / 100,
+                max_hold_bars: parseInt(document.getElementById('max-hold').value),
+                initial_capital: parseFloat(document.getElementById('initial-capital').value),
+                temperature: parseFloat(document.getElementById('temperature').value),
+                top_p: parseFloat(document.getElementById('top-p').value),
+                sample_count: parseInt(document.getElementById('sample-count').value),
+                batch_size: parseInt(document.getElementById('batch-size').value),
+                start_date: document.getElementById('backtest-start').value || null,
+                end_date: document.getElementById('backtest-end').value || null,
+            };
+
+            var modelsToRun = activeSlots.map(function(i) { return selectedModels[i]; });
+
+            try {
+                document.getElementById('run-comparison-btn').disabled = true;
+                document.getElementById('progress-section').style.display = 'block';
+                document.getElementById('placeholder').style.display = 'none';
+                document.getElementById('results').style.display = 'none';
+
+                var resp = await axios.post('/api/compare/run', {
+                    models: modelsToRun,
+                    params: params
+                });
+
+                if (resp.data.session_id) {
+                    startProgressPolling(resp.data.session_id);
+                }
+            } catch (e) {
+                showStatus('models-status', 'error', 'Failed to start comparison: ' + e.message);
+                document.getElementById('run-comparison-btn').disabled = false;
+                document.getElementById('progress-section').style.display = 'none';
+            }
+        }
+
+        function startProgressPolling(sessionId) {
+            progressInterval = setInterval(async function() {
+                try {
+                    var resp = await axios.get('/api/compare/progress?session_id=' + sessionId);
+                    var d = resp.data;
+                    document.getElementById('progress-fill').style.width = (d.progress * 100) + '%';
+                    document.getElementById('progress-text').textContent =
+                        (d.current_model || 'Model') + ': ' + (d.current_step || 0) + '/' + (d.total_steps || '?') + ' (' + (d.progress * 100).toFixed(1) + '%)';
+
+                    if (d.status === 'completed') {
+                        clearInterval(progressInterval);
+                        await fetchComparisonResults(sessionId);
+                    } else if (d.status === 'error') {
+                        clearInterval(progressInterval);
+                        showStatus('models-status', 'error', d.error_message || 'Comparison failed');
+                        document.getElementById('run-comparison-btn').disabled = false;
+                        document.getElementById('progress-section').style.display = 'none';
+                    }
+                } catch (e) {
+                    clearInterval(progressInterval);
+                    showStatus('models-status', 'error', 'Lost connection');
+                }
+            }, 2000);
+        }
+
+        async function fetchComparisonResults(sessionId) {
+            try {
+                var resp = await axios.get('/api/compare/results?session_id=' + sessionId);
+                displayComparisonResults(resp.data);
+                showStatus('models-status', 'success', 'Comparison completed!');
+            } catch (e) {
+                showStatus('models-status', 'error', 'Failed to fetch results');
+            } finally {
+                document.getElementById('run-comparison-btn').disabled = false;
+                document.getElementById('progress-section').style.display = 'none';
+            }
+        }
+
+        function displayComparisonResults(data) {
+            comparisonResults = data;
+            document.getElementById('results').style.display = 'block';
+
+            var models = data.models;
+            var nModels = models.length;
+
+            // Update table headers
+            for (var i = 0; i < MAX_MODELS; i++) {
+                var th = document.getElementById('th-model-' + i);
+                if (models[i]) {
+                    th.textContent = models[i].name;
+                    th.style.display = '';
+                } else {
+                    th.style.display = 'none';
+                }
+            }
+
+            // Metrics config
+            var metricsList = [
+                { key: 'total_return_pct', label: 'Total Return', fmt: function(v) { return v.toFixed(2) + '%'; }, higher: true },
+                { key: 'sharpe_ratio', label: 'Sharpe Ratio', fmt: function(v) { return v.toFixed(2); }, higher: true },
+                { key: 'max_drawdown_pct', label: 'Max Drawdown', fmt: function(v) { return v.toFixed(2) + '%'; }, higher: false },
+                { key: 'win_rate_pct', label: 'Win Rate', fmt: function(v) { return v.toFixed(1) + '%'; }, higher: true },
+                { key: 'num_trades', label: 'Trades', fmt: function(v) { return v; }, higher: null },
+                { key: 'profit_factor', label: 'Profit Factor', fmt: function(v) { return v === 'Inf' ? '∞' : parseFloat(v).toFixed(2); }, higher: true },
+                { key: 'buy_hold_return_pct', label: 'Buy & Hold', fmt: function(v) { return v.toFixed(2) + '%'; }, higher: true },
+                { key: 'final_value', label: 'Final Value', fmt: function(v) { return '$' + v.toLocaleString(); }, higher: true },
+            ];
+
+            var tbody = document.getElementById('comparison-tbody');
+            tbody.innerHTML = '';
+
+            metricsList.forEach(function(metric) {
+                var tr = document.createElement('tr');
+                var tdLabel = document.createElement('td');
+                tdLabel.textContent = metric.label;
+                tdLabel.style.fontWeight = '600';
+                tr.appendChild(tdLabel);
+
+                var values = models.map(function(m) { return m ? m.metrics[metric.key] : null; });
+                var numericValues = values.filter(function(v) { return v !== null && typeof v === 'number'; });
+
+                for (var mi = 0; mi < nModels; mi++) {
+                    var val = values[mi];
+                    var td = document.createElement('td');
+                    if (val === null) {
+                        td.textContent = '-';
+                        td.className = 'neutral';
+                    } else {
+                        td.textContent = metric.fmt(val);
+                        if (numericValues.length > 1) {
+                            var best = metric.higher ? Math.max.apply(null, numericValues) : Math.min.apply(null, numericValues);
+                            var isBest = Math.abs(val - best) < 0.0001;
+                            if (isBest && metric.higher !== null) {
+                                td.className = 'best';
+                            } else if (metric.higher === true && val > 0) {
+                                td.className = 'positive';
+                            } else if (metric.higher === false && val > 0) {
+                                td.className = 'negative';
+                            }
+                        }
+                    }
+                    tr.appendChild(td);
+                }
+
+                // Empty cells for unused slots
+                for (var ui = nModels; ui < MAX_MODELS; ui++) {
+                    var tdEmpty = document.createElement('td');
+                    tdEmpty.textContent = '-';
+                    tdEmpty.className = 'neutral';
+                    tr.appendChild(tdEmpty);
+                }
+
+                tbody.appendChild(tr);
+            });
+
+            // Find best model
+            var bestIdx = 0;
+            var bestScore = -Infinity;
+            models.forEach(function(m, i) {
+                if (!m) return;
+                var score = m.metrics.sharpe_ratio * 0.4 + m.metrics.total_return_pct * 0.3 +
+                    (100 - m.metrics.max_drawdown_pct) * 0.2 + (m.metrics.win_rate_pct) * 0.1;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIdx = i;
+                }
+            });
+
+            var bestText = document.getElementById('best-model-text');
+            bestText.textContent = 'Best Model: ' + models[bestIdx].name + ' (Sharpe: ' + models[bestIdx].metrics.sharpe_ratio + ', Return: ' + models[bestIdx].metrics.total_return_pct.toFixed(2) + '%)';
+
+            // Model result cards
+            var cardsContainer = document.getElementById('model-cards');
+            cardsContainer.innerHTML = '';
+            var ranks = ['1', '2', '3'];
+            var badges = ['🥇', '🥈', '🥉'];
+            models.forEach(function(m, i) {
+                if (!m) return;
+                var rank = ranks[i];
+                var badge = badges[i];
+                var retPositive = m.metrics.total_return_pct > 0;
+                var card = document.createElement('div');
+                card.className = 'model-result-card rank-' + rank;
+                card.innerHTML =
+                    '<h4>' + badge + ' ' + m.name + '</h4>' +
+                    '<div class="metrics-mini">' +
+                    '<div class="metric-mini"><div class="value ' + (retPositive ? 'positive' : 'negative') + '" style="color:' + (retPositive ? '#38a169' : '#e53e3e') + '">' + m.metrics.total_return_pct.toFixed(2) + '%</div><div class="label">Return</div></div>' +
+                    '<div class="metric-mini"><div class="value">' + m.metrics.sharpe_ratio + '</div><div class="label">Sharpe</div></div>' +
+                    '<div class="metric-mini"><div class="value">' + m.metrics.max_drawdown_pct.toFixed(2) + '%</div><div class="label">Max DD</div></div>' +
+                    '<div class="metric-mini"><div class="value">' + m.metrics.win_rate_pct.toFixed(1) + '%</div><div class="label">Win Rate</div></div>' +
+                    '</div>';
+                cardsContainer.appendChild(card);
+            });
+
+            // Equity comparison chart
+            var equityChart = document.getElementById('equity-comparison-chart');
+            var equityTraces = [];
+            models.forEach(function(m, i) {
+                if (!m) return;
+                equityTraces.push({
+                    x: m.equity_curve.map(function(e) { return e.timestamp; }),
+                    y: m.equity_curve.map(function(e) { return e.portfolio_value; }),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: m.name,
+                    line: { color: MODEL_COLORS[i], width: 2 }
+                });
+            });
+
+            Plotly.newPlot(equityChart, equityTraces, {
+                title: 'Equity Curves Comparison',
+                xaxis: { title: 'Time' },
+                yaxis: { title: 'Portfolio Value' },
+                template: 'plotly_white',
+                height: 400,
+                legend: { orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'right', x: 1 }
+            });
+
+            // Individual equity charts
+            var equityCards = document.getElementById('equity-cards');
+            equityCards.innerHTML = '';
+            models.forEach(function(m, i) {
+                if (!m) return;
+                var card = document.createElement('div');
+                card.className = 'model-equity-card';
+                card.innerHTML = '<h4>' + m.name + '</h4><div class="equity-chart" id="equity-chart-' + i + '"></div>';
+                equityCards.appendChild(card);
+
+                Plotly.newPlot('equity-chart-' + i, [{
+                    x: m.equity_curve.map(function(e) { return e.timestamp; }),
+                    y: m.equity_curve.map(function(e) { return e.portfolio_value; }),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: m.name,
+                    line: { color: MODEL_COLORS[i], width: 2 }
+                }], {
+                    template: 'plotly_white',
+                    height: 180,
+                    showlegend: false,
+                    margin: { t: 10, b: 30, l: 50, r: 10 }
+                });
+            });
+        }
+
+        function setupEventListeners() {
+            document.getElementById('load-models-btn').addEventListener('click', loadModels);
+            document.getElementById('load-data-btn').addEventListener('click', loadData);
+            document.getElementById('run-comparison-btn').addEventListener('click', runComparison);
+
+            document.getElementById('temperature').addEventListener('input', function() {
+                document.getElementById('temperature-value').textContent = this.value;
+            });
+            document.getElementById('top-p').addEventListener('input', function() {
+                document.getElementById('top-p-value').textContent = this.value;
+            });
+        }
+
+        function showStatus(elId, type, msg) {
+            var el = document.getElementById(elId);
+            el.className = 'status ' + type;
+            el.textContent = msg;
+            el.style.display = 'block';
+            setTimeout(function() { el.style.display = 'none'; }, 6000);
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('show', show);
+        }
+    </script>
+</body>
+</html>

@@ -24,7 +24,7 @@ except ImportError:
     print("Warning: Kronos model cannot be imported, will use simulated data for demonstration")
 
 try:
-    from backtest_engine import BacktestSession, create_equity_chart, create_drawdown_chart, create_price_trades_chart
+    from backtest_engine import BacktestSession, CompareSession, create_equity_chart, create_drawdown_chart, create_price_trades_chart
     BACKTEST_AVAILABLE = True
 except ImportError:
     BACKTEST_AVAILABLE = False
@@ -43,6 +43,14 @@ backtest_sessions = {}
 
 # Available model configurations
 AVAILABLE_MODELS = {
+    'xaumodel-local': {
+        'name': 'XAU Finetuned (Local)',
+        'model_path': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'xaumodel'),
+        'tokenizer_path': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'xaumodel', 'tokenizer'),
+        'context_length': 512,
+        'params': '~24.7M',
+        'description': 'Fine-tuned model on XAU/USD data (local)'
+    },
     'kronos-mini': {
         'name': 'Kronos-mini',
         'model_id': 'NeoQuasar/Kronos-mini',
@@ -654,10 +662,18 @@ def load_model():
             return jsonify({'error': f'Unsupported model: {model_key}'}), 400
         
         model_config = AVAILABLE_MODELS[model_key]
-        
+
         # Load tokenizer and model
-        tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
-        model = Kronos.from_pretrained(model_config['model_id'])
+        if 'model_path' in model_config:
+            # Load from local path (fine-tuned model)
+            model_path = model_config['model_path']
+            tokenizer_path = model_config['tokenizer_path']
+            tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
+            model = Kronos.from_pretrained(model_path)
+        else:
+            # Load from HuggingFace Hub
+            tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
+            model = Kronos.from_pretrained(model_config['model_id'])
         
         # Create predictor
         predictor = KronosPredictor(model, tokenizer, device=device, max_context=model_config['context_length'])
@@ -861,6 +877,155 @@ def backtest_cancel():
 
     session.cancel()
     return jsonify({'status': 'cancelling'})
+
+
+# ======================================================================
+# Compare Routes
+# ======================================================================
+
+@app.route('/compare')
+def compare_page():
+    """Render the model comparison page."""
+    return render_template('compare.html')
+
+
+# Global stores for compare sessions and loaded predictors
+compare_sessions = {}
+compare_predictors = {}
+
+
+@app.route('/api/compare/load-model', methods=['POST'])
+def compare_load_model():
+    """Load a single model for comparison."""
+    global compare_predictors
+
+    if not MODEL_AVAILABLE:
+        return jsonify({'error': 'Kronos model library not available'}), 400
+
+    data = request.get_json()
+    model_key = data.get('model_key')
+    device = data.get('device', 'cuda')
+
+    if model_key not in AVAILABLE_MODELS:
+        return jsonify({'error': f'Unsupported model: {model_key}'}), 400
+
+    model_config = AVAILABLE_MODELS[model_key]
+
+    try:
+        if 'model_path' in model_config:
+            tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_path'])
+            model = Kronos.from_pretrained(model_config['model_path'])
+        else:
+            tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
+            model = Kronos.from_pretrained(model_config['model_id'])
+
+        predictor = KronosPredictor(model, tokenizer, device=device, max_context=model_config['context_length'])
+
+        compare_predictors[model_key] = {
+            'predictor': predictor,
+            'config': model_config,
+        }
+
+        return jsonify({
+            'success': True,
+            'message': f'{model_config["name"]} loaded successfully',
+            'model_info': {
+                'name': model_config['name'],
+                'params': model_config['params'],
+                'context_length': model_config['context_length'],
+            }
+        })
+    except Exception as e:
+        return jsonify({'error': f'Model loading failed: {str(e)}'}), 500
+
+
+@app.route('/api/compare/run', methods=['POST'])
+def compare_run():
+    """Start a multi-model comparison session."""
+    global compare_sessions, compare_predictors
+
+    if not BACKTEST_AVAILABLE:
+        return jsonify({'error': 'Backtest engine not available'}), 400
+
+    data = request.get_json()
+    model_keys = data.get('models', [])
+    params = data.get('params', {})
+
+    if not model_keys:
+        return jsonify({'error': 'At least one model is required'}), 400
+
+    # Check all models are loaded
+    for mk in model_keys:
+        if mk not in compare_predictors:
+            return jsonify({'error': f'Model {mk} is not loaded'}), 400
+
+    # Load data
+    file_path = params.get('file_path')
+    if not file_path:
+        return jsonify({'error': 'File path is required'}), 400
+
+    df, error = load_data_file(file_path)
+    if error:
+        return jsonify({'error': error}), 400
+
+    required_data = params.get('lookback', 400) + params.get('pred_len', 120)
+    if len(df) < required_data:
+        return jsonify({'error': f'Insufficient data: need {required_data}, got {len(df)}'}), 400
+
+    # Clean old sessions
+    now = datetime.datetime.now()
+    expired = [sid for sid, sess in compare_sessions.items()
+               if hasattr(sess, 'created_at') and (now - sess.created_at).total_seconds() > 7200]
+    for sid in expired:
+        del compare_sessions[sid]
+
+    session_id = str(uuid.uuid4())
+
+    # Create comparison session
+    predictors = {mk: compare_predictors[mk]['predictor'] for mk in model_keys}
+    session = CompareSession(df, predictors, params)
+    session.created_at = now
+    compare_sessions[session_id] = session
+
+    thread = threading.Thread(target=session.run, daemon=True)
+    thread.start()
+
+    return jsonify({'session_id': session_id, 'status': 'started'})
+
+
+@app.route('/api/compare/progress')
+def compare_progress():
+    """Get progress of a running comparison."""
+    session_id = request.args.get('session_id')
+    session = compare_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    return jsonify({
+        'progress': session.progress,
+        'status': session.status,
+        'error_message': session.error_message,
+        'current_model': session.current_model_name,
+        'current_step': session.current_step,
+        'total_steps': session.total_steps,
+    })
+
+
+@app.route('/api/compare/results')
+def compare_results():
+    """Get results of a completed comparison."""
+    session_id = request.args.get('session_id')
+    session = compare_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    if session.status != 'completed':
+        return jsonify({'error': f'Session not completed yet. Status: {session.status}'}), 400
+
+    return jsonify(session.results)
+
 
 if __name__ == '__main__':
     print("Starting Kronos Web UI...")

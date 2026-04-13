@@ -1,7 +1,7 @@
 data:
   data_path: "/teamspace/studios/this_studio/data/XAUUSD_M1.parquet"
   lookback_window: 480
-  predict_window: 30
+  predict_window: 5
   max_context: 512
   clip: 5.0
   train_ratio: 0.9

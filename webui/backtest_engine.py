@@ -650,3 +650,96 @@ def create_price_trades_chart(results):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
+
+
+# ======================================================================
+# Multi-Model Comparison Session
+# ======================================================================
+
+
+class CompareSession:
+    """Compare multiple models on the same data."""
+
+    def __init__(self, df, predictors, params):
+        self.df = df
+        self.predictors = predictors  # dict: model_key -> predictor
+        self.params = params
+        self.batch_size = params.get("batch_size", 16)
+        self.cancelled = False
+        self.progress = 0.0
+        self.status = "pending"
+        self.error_message = None
+        self.current_step = 0
+        self.total_steps = 0
+        self.current_model_name = ""
+        self.results = None
+
+    def run(self):
+        """Run comparison across all models."""
+        try:
+            self.status = "running"
+            self._run_comparison()
+            if not self.cancelled:
+                self.status = "completed"
+        except Exception as e:
+            self.status = "error"
+            self.error_message = str(e)
+
+    def cancel(self):
+        self.cancelled = True
+
+    def _run_comparison(self):
+        model_keys = list(self.predictors.keys())
+        n_models = len(model_keys)
+
+        lookback = self.params.get("lookback", 400)
+        pred_len = self.params.get("pred_len", 120)
+        step_size = self.params.get("step_size", 60)
+
+        required_data = lookback + pred_len
+        if len(self.df) < required_data:
+            raise ValueError(f"Need at least {required_data} rows, got {len(self.df)}")
+
+        max_start = len(self.df) - required_data
+        n_windows = len(range(0, max_start + 1, step_size))
+
+        self.total_steps = n_models * n_windows
+        self.current_step = 0
+
+        # Use BacktestSession to run each model, but track progress ourselves
+        model_results = []
+
+        for model_key in model_keys:
+            if self.cancelled:
+                self.status = "cancelled"
+                return
+
+            self.current_model_name = model_key
+            predictor = self.predictors[model_key]
+
+            session = BacktestSession(self.df, predictor, self.params)
+
+            try:
+                # Run the backtest directly without threading
+                session._run_rolling_backtest()
+            except Exception as e:
+                raise RuntimeError(f"Model {model_key} failed: {e}")
+
+            if self.cancelled:
+                self.status = "cancelled"
+                return
+
+            model_results.append({
+                'name': model_key,
+                'metrics': session.results['metrics'],
+                'equity_curve': session.results['equity_curve'],
+                'buy_hold_curve': session.results['buy_hold_curve'],
+                'drawdown_series': session.results['drawdown_series'],
+                'trades': session.results['trades'],
+                'price_data': session.results['price_data'],
+            })
+
+            self.current_step += n_windows
+            self.progress = self.current_step / self.total_steps
+
+        self.results = {'models': model_results}
