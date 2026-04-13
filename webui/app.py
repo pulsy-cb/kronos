@@ -52,6 +52,14 @@ AVAILABLE_MODELS = {
         'params': '~24.7M',
         'description': 'Fine-tuned model on XAU/USD data (local)'
     },
+    'xaumodel-mini': {
+        'name': 'XAU mini (local)',
+        'model_path': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'zmini'),
+        'tokenizer_path': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'zmini', 'tokenizer'),
+        'context_length': 512,
+        'params': '~24.7M',
+        'description': 'Lightweight Fine-tuned model on XAU/USD data (local)'
+    },
     'kronos-mini': {
         'name': 'Kronos-mini',
         'model_id': 'NeoQuasar/Kronos-mini',
@@ -665,8 +673,14 @@ def load_model():
         model_config = AVAILABLE_MODELS[model_key]
 
         # Load tokenizer and model
-        tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
-        model = Kronos.from_pretrained(model_config['model_id'])
+        if 'model_path' in model_config:
+            # Load from local path (fine-tuned model)
+            tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_path'])
+            model = Kronos.from_pretrained(model_config['model_path'])
+        else:
+            # Load from HuggingFace Hub
+            tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
+            model = Kronos.from_pretrained(model_config['model_id'])
 
         # Move to device first, then compile for faster inference
         tokenizer = tokenizer.to(device)
@@ -681,16 +695,6 @@ def load_model():
                 model = torch.compile(model)
             except Exception:
                 pass  # Fall back to uncompiled model
-        if 'model_path' in model_config:
-            # Load from local path (fine-tuned model)
-            model_path = model_config['model_path']
-            tokenizer_path = model_config['tokenizer_path']
-            tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
-            model = Kronos.from_pretrained(model_path)
-        else:
-            # Load from HuggingFace Hub
-            tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
-            model = Kronos.from_pretrained(model_config['model_id'])
         
         # Create predictor
         predictor = KronosPredictor(model, tokenizer, device=device, max_context=model_config['context_length'])

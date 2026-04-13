@@ -120,61 +120,149 @@ class BacktestSession:
         self.current_step = 0
 
         # ---------------------------------------------------------------
-        # Phase 2: Batched prediction using predict_batch
+        # Phase 2: Batched prediction
         # ---------------------------------------------------------------
         all_predictions = [None] * total_windows
         batch_size = self.batch_size
-        use_batch = hasattr(self.predictor, 'predict_batch')
+        use_gpu_prepared = hasattr(self.predictor, 'prepare_backtest_data')
 
-        if use_batch:
-            batch_idx = 0
-            while batch_idx < total_windows:
+        if use_gpu_prepared:
+            import torch as _torch
+
+            # Determine chunk size based on GPU capacity
+            try:
+                capacity = self.predictor.estimate_gpu_capacity(lookback, pred_len, sample_count)
+            except Exception:
+                capacity = total_windows
+
+            chunk_size = min(capacity, total_windows)
+            chunk_start = 0
+
+            while chunk_start < total_windows:
                 if self.cancelled:
                     self.status = "cancelled"
                     return
 
-                end_idx = min(batch_idx + batch_size, total_windows)
-                batch_dfs = all_x_dfs[batch_idx:end_idx]
-                batch_x_ts = all_x_timestamps[batch_idx:end_idx]
-                batch_y_ts = all_y_timestamps[batch_idx:end_idx]
+                chunk_end = min(chunk_start + chunk_size, total_windows)
+                chunk_dfs = all_x_dfs[chunk_start:chunk_end]
+                chunk_x_ts = all_x_timestamps[chunk_start:chunk_end]
+                chunk_y_ts = all_y_timestamps[chunk_start:chunk_end]
 
-                pred_dfs = self.predictor.predict_batch(
-                    df_list=batch_dfs,
-                    x_timestamp_list=batch_x_ts,
-                    y_timestamp_list=batch_y_ts,
-                    pred_len=pred_len,
-                    T=temperature,
-                    top_p=top_p,
-                    sample_count=sample_count,
-                    verbose=False,
-                )
+                try:
+                    bundle = self.predictor.prepare_backtest_data(
+                        chunk_dfs, chunk_x_ts, chunk_y_ts, pred_len
+                    )
+                except (RuntimeError, Exception):
+                    # GPU OOM or other error -- fall back to per-mini-batch
+                    use_gpu_prepared = False
+                    break
 
-                for i, pred_df in enumerate(pred_dfs):
-                    all_predictions[batch_idx + i] = pred_df
+                chunk_n = chunk_end - chunk_start
+                device = self.predictor.device
+                preds_gpu = _torch.empty(chunk_n, pred_len, 6, dtype=_torch.float32, device=device)
 
-                batch_idx = end_idx
-                self.current_step = end_idx
-                self.progress = end_idx / total_windows
-        else:
-            # Fallback: sequential prediction (original behavior)
-            for step_i in range(total_windows):
-                if self.cancelled:
-                    self.status = "cancelled"
-                    return
+                # Process mini-batches within this chunk
+                batch_idx = 0
+                while batch_idx < chunk_n:
+                    if self.cancelled:
+                        del bundle, preds_gpu
+                        self.status = "cancelled"
+                        return
 
-                pred_df = self.predictor.predict(
-                    df=all_x_dfs[step_i],
-                    x_timestamp=all_x_timestamps[step_i],
-                    y_timestamp=all_y_timestamps[step_i],
-                    pred_len=pred_len,
-                    T=temperature,
-                    top_p=top_p,
-                    sample_count=sample_count,
-                )
-                all_predictions[step_i] = pred_df
+                    b_end = min(batch_idx + batch_size, chunk_n)
+                    try:
+                        batch_preds = self.predictor.predict_batch_from_gpu(
+                            bundle, batch_idx, b_end,
+                            T=temperature, top_p=top_p, sample_count=sample_count, verbose=False
+                        )
+                    except _torch.cuda.OutOfMemoryError:
+                        # Retry with smaller batch
+                        half_batch = max(1, (b_end - batch_idx) // 2)
+                        b_end = min(batch_idx + half_batch, chunk_n)
+                        batch_preds = self.predictor.predict_batch_from_gpu(
+                            bundle, batch_idx, b_end,
+                            T=temperature, top_p=top_p, sample_count=sample_count, verbose=False
+                        )
 
-                self.current_step = step_i + 1
-                self.progress = self.current_step / total_windows
+                    preds_gpu[batch_idx:b_end] = batch_preds
+                    batch_idx = b_end
+                    self.current_step = chunk_start + batch_idx
+                    self.progress = self.current_step / total_windows
+
+                # Denormalize on GPU
+                preds_gpu = preds_gpu * (bundle.stds.unsqueeze(1) + 1e-5) + bundle.means.unsqueeze(1)
+
+                # Single GPU->CPU transfer for this chunk
+                preds_cpu = preds_gpu.cpu().numpy()
+
+                # Construct DataFrames
+                for i in range(chunk_n):
+                    global_i = chunk_start + i
+                    pred_df = pd.DataFrame(
+                        preds_cpu[i],
+                        columns=self.predictor.price_cols + [self.predictor.vol_col, self.predictor.amt_vol],
+                        index=chunk_y_ts[i]
+                    )
+                    all_predictions[global_i] = pred_df
+
+                # Release GPU memory
+                del bundle, preds_gpu
+                if _torch.cuda.is_available() and self.predictor.device != "cpu":
+                    _torch.cuda.empty_cache()
+
+                chunk_start = chunk_end
+
+        if not use_gpu_prepared:
+            use_batch = hasattr(self.predictor, 'predict_batch')
+            if use_batch:
+                batch_idx = 0
+                while batch_idx < total_windows:
+                    if self.cancelled:
+                        self.status = "cancelled"
+                        return
+
+                    end_idx = min(batch_idx + batch_size, total_windows)
+                    batch_dfs = all_x_dfs[batch_idx:end_idx]
+                    batch_x_ts = all_x_timestamps[batch_idx:end_idx]
+                    batch_y_ts = all_y_timestamps[batch_idx:end_idx]
+
+                    pred_dfs = self.predictor.predict_batch(
+                        df_list=batch_dfs,
+                        x_timestamp_list=batch_x_ts,
+                        y_timestamp_list=batch_y_ts,
+                        pred_len=pred_len,
+                        T=temperature,
+                        top_p=top_p,
+                        sample_count=sample_count,
+                        verbose=False,
+                    )
+
+                    for i, pred_df in enumerate(pred_dfs):
+                        all_predictions[batch_idx + i] = pred_df
+
+                    batch_idx = end_idx
+                    self.current_step = end_idx
+                    self.progress = end_idx / total_windows
+            else:
+                # Fallback: sequential prediction (original behavior)
+                for step_i in range(total_windows):
+                    if self.cancelled:
+                        self.status = "cancelled"
+                        return
+
+                    pred_df = self.predictor.predict(
+                        df=all_x_dfs[step_i],
+                        x_timestamp=all_x_timestamps[step_i],
+                        y_timestamp=all_y_timestamps[step_i],
+                        pred_len=pred_len,
+                        T=temperature,
+                        top_p=top_p,
+                        sample_count=sample_count,
+                    )
+                    all_predictions[step_i] = pred_df
+
+                    self.current_step = step_i + 1
+                    self.progress = self.current_step / total_windows
 
         # ---------------------------------------------------------------
         # Phase 3: Generate signals from predictions
