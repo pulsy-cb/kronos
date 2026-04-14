@@ -31,6 +31,13 @@ except ImportError:
     BACKTEST_AVAILABLE = False
     print("Warning: Backtest engine not available")
 
+try:
+    from live.session import TradingSessionManager
+    LIVE_AVAILABLE = True
+except Exception as e:
+    LIVE_AVAILABLE = False
+    print(f"Warning: Live trading not available: {e}")
+
 app = Flask(__name__)
 CORS(app)
 
@@ -914,6 +921,12 @@ def compare_page():
 compare_sessions = {}
 compare_predictors = {}
 
+# Live trading manager
+if LIVE_AVAILABLE:
+    live_manager = TradingSessionManager()
+else:
+    live_manager = None
+
 
 @app.route('/api/compare/load-model', methods=['POST'])
 def compare_load_model():
@@ -1048,9 +1061,183 @@ def compare_results():
     return jsonify(session.results)
 
 
+# ======================================================================
+# Live Trading Routes
+# ======================================================================
+
+@app.route('/live')
+def live_page():
+    """Render the live trading page."""
+    return render_template('live.html')
+
+
+@app.route('/api/live/sessions')
+def live_sessions():
+    """Get state of all trading sessions."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'sessions': {}, 'error': 'Live trading module not available'})
+    sessions = live_manager.get_all_sessions_state()
+    return jsonify({'sessions': sessions})
+
+
+@app.route('/api/live/create', methods=['POST'])
+def live_create():
+    """Create a new trading session."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'error': 'Live trading module not available. Make sure MetaTrader5 is installed.'}), 400
+
+    config_dict = request.get_json()
+    if not config_dict:
+        return jsonify({'error': 'No configuration data provided'}), 400
+
+    try:
+        session_id = live_manager.create_session(config_dict)
+        return jsonify({'success': True, 'session_id': session_id})
+    except Exception as e:
+        print(f"Error creating live session: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/live/start', methods=['POST'])
+def live_start():
+    """Start a trading session (connect MT5, load model, begin trading)."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'error': 'Live trading module not available'}), 400
+
+    data = request.get_json()
+    session_id = data.get('session_id')
+    success, msg = live_manager.start_session(session_id)
+    if success:
+        return jsonify({'success': True, 'message': msg})
+    else:
+        return jsonify({'success': False, 'error': msg}), 500
+
+
+@app.route('/api/live/stop', methods=['POST'])
+def live_stop():
+    """Stop a trading session."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'error': 'Live trading module not available'}), 400
+
+    data = request.get_json()
+    session_id = data.get('session_id')
+    success, msg = live_manager.stop_session(session_id)
+    return jsonify({'success': success, 'message': msg})
+
+
+@app.route('/api/live/pause', methods=['POST'])
+def live_pause():
+    """Pause a trading session."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'error': 'Live trading module not available'}), 400
+
+    data = request.get_json()
+    session_id = data.get('session_id')
+    success, msg = live_manager.pause_session(session_id)
+    return jsonify({'success': success, 'message': msg})
+
+
+@app.route('/api/live/resume', methods=['POST'])
+def live_resume():
+    """Resume a paused trading session."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'error': 'Live trading module not available'}), 400
+
+    data = request.get_json()
+    session_id = data.get('session_id')
+    success, msg = live_manager.resume_session(session_id)
+    return jsonify({'success': success, 'message': msg})
+
+
+@app.route('/api/live/close-position', methods=['POST'])
+def live_close_position():
+    """Manually close the position of a trading session."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'error': 'Live trading module not available'}), 400
+
+    data = request.get_json()
+    session_id = data.get('session_id')
+    success, msg = live_manager.close_position(session_id)
+    return jsonify({'success': success, 'message': msg})
+
+
+@app.route('/api/live/delete', methods=['POST'])
+def live_delete():
+    """Delete a stopped trading session."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'error': 'Live trading module not available'}), 400
+
+    data = request.get_json()
+    session_id = data.get('session_id')
+    live_manager.delete_session(session_id)
+    return jsonify({'success': True})
+
+
+@app.route('/api/live/state')
+def live_state():
+    """Get detailed state of a specific session."""
+    if not LIVE_AVAILABLE or live_manager is None:
+        return jsonify({'error': 'Live trading module not available'}), 400
+
+    session_id = request.args.get('session_id')
+    state = live_manager.get_session_state(session_id)
+    if state is None:
+        return jsonify({'error': 'Session not found'}), 404
+    return jsonify(state)
+
+
+@app.route('/api/live/log-files')
+def live_log_files():
+    """List available log files."""
+    if not LIVE_AVAILABLE:
+        return jsonify({'files': []})
+
+    from live.logger import list_log_files
+    files = list_log_files()
+    return jsonify({'files': files})
+
+
+@app.route('/api/live/history')
+def live_history():
+    """Read events from a specific log file, optionally filtered by type."""
+    if not LIVE_AVAILABLE:
+        return jsonify({'events': [], 'error': 'Live trading not available'})
+
+    from live.logger import read_log_file
+
+    filepath = request.args.get('file')
+    event_type = request.args.get('type')  # trade, signal, equity, or None for all
+    limit = int(request.args.get('limit', 500))
+
+    if not filepath:
+        return jsonify({'events': [], 'error': 'No file specified'}), 400
+
+    events = read_log_file(filepath, event_type=event_type if event_type else None, limit=limit)
+    return jsonify({'events': events, 'count': len(events)})
+
+
+@app.route('/api/live/sessions-archive')
+def live_sessions_archive():
+    """Read all past session summaries."""
+    if not LIVE_AVAILABLE:
+        return jsonify({'sessions': []})
+
+    from live.logger import read_log_file
+    from pathlib import Path
+
+    summary_path = Path('logs') / 'sessions_summary.jsonl'
+    if not summary_path.exists():
+        return jsonify({'sessions': []})
+
+    sessions = read_log_file(str(summary_path), limit=500)
+    return jsonify({'sessions': list(reversed(sessions))})
+
+
 if __name__ == '__main__':
     print("Starting Kronos Web UI...")
     print(f"Model availability: {MODEL_AVAILABLE}")
+    print(f"Live trading availability: {LIVE_AVAILABLE}")
     if MODEL_AVAILABLE:
         print("Tip: You can load Kronos model through /api/load-model endpoint")
     else:
