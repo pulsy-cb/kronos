@@ -270,7 +270,7 @@
                 <a href="/live" class="active">Live Trading</a>
             </nav>
             <h1>Kronos Live Trading</h1>
-            <p>Connexion temps reel a MetaTrader 5 avec predictions Kronos</p>
+            <p>Connexion temps reel a MT5 ou Binance Futures avec predictions Kronos</p>
         </div>
 
         <!-- New Session Panel -->
@@ -286,6 +286,13 @@
                 <button class="preset-btn" onclick="applyPreset('D1')">D1</button>
             </div>
             <div class="form-grid">
+                <div class="form-group">
+                    <label>Broker</label>
+                    <select id="cfg-broker" onchange="toggleBrokerFields()">
+                        <option value="mt5">MetaTrader 5</option>
+                        <option value="binance">Binance Futures</option>
+                    </select>
+                </div>
                 <div class="form-group">
                     <label>Symbol</label>
                     <input type="text" id="cfg-symbol" value="XAUUSD" />
@@ -376,8 +383,8 @@
             </div>
 
             <div style="margin-top:10px;">
-                <h3 style="color:#a78bfa;font-size:0.85rem;margin-bottom:6px;">Connexion MT5 (optionnel si .env configure)</h3>
-                <div class="form-grid">
+                <h3 style="color:#a78bfa;font-size:0.85rem;margin-bottom:6px;">Connexion <span id="broker-label">MT5</span></h3>
+                <div id="mt5-fields" class="form-grid">
                     <div class="form-group">
                         <label>MT5 Login</label>
                         <input type="text" id="cfg-mt5-login" placeholder="Auto depuis .env" />
@@ -393,6 +400,27 @@
                     <div class="form-group">
                         <label>Chemin MT5 (optionnel)</label>
                         <input type="text" id="cfg-mt5-path" placeholder="Auto" />
+                    </div>
+                </div>
+                <div id="binance-fields" class="form-grid" style="display:none;">
+                    <div class="form-group">
+                        <label>Binance API Key</label>
+                        <input type="text" id="cfg-binance-api-key" placeholder="Votre API Key" />
+                    </div>
+                    <div class="form-group">
+                        <label>Binance API Secret</label>
+                        <input type="password" id="cfg-binance-api-secret" placeholder="Votre API Secret" />
+                    </div>
+                    <div class="form-group">
+                        <label>Mode</label>
+                        <select id="cfg-binance-testnet">
+                            <option value="true" selected>Testnet (Demo)</option>
+                            <option value="false">Live (Reel)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Levier</label>
+                        <input type="number" id="cfg-binance-leverage" value="10" min="1" max="125" />
                     </div>
                 </div>
             </div>
@@ -516,13 +544,35 @@
             document.getElementById('grp-risk-pct').style.display = v === 'percent' ? '' : 'none';
         }
 
+        function toggleBrokerFields() {
+            const broker = document.getElementById('cfg-broker').value;
+            const mt5Fields = document.getElementById('mt5-fields');
+            const binanceFields = document.getElementById('binance-fields');
+            const symbolInput = document.getElementById('cfg-symbol');
+            const brokerLabel = document.getElementById('broker-label');
+
+            if (broker === 'mt5') {
+                mt5Fields.style.display = '';
+                binanceFields.style.display = 'none';
+                symbolInput.value = 'XAUUSD';
+                brokerLabel.textContent = 'MT5';
+            } else {
+                mt5Fields.style.display = 'none';
+                binanceFields.style.display = '';
+                symbolInput.value = 'BTCUSDT';
+                brokerLabel.textContent = 'Binance Futures';
+            }
+        }
+
         function getConfig() {
-            return {
+            const broker = document.getElementById('cfg-broker').value;
+            const config = {
                 symbol: document.getElementById('cfg-symbol').value,
                 timeframe: document.getElementById('cfg-timeframe').value,
                 model_key: document.getElementById('cfg-model').value,
                 model_name: document.getElementById('cfg-model').selectedOptions[0].getAttribute('data-name') || document.getElementById('cfg-model').value,
                 device: document.getElementById('cfg-device').value,
+                broker: broker,
                 lookback: parseInt(document.getElementById('cfg-lookback').value),
                 pred_len: parseInt(document.getElementById('cfg-pred-len').value),
                 temperature: parseFloat(document.getElementById('cfg-temp').value),
@@ -535,11 +585,19 @@
                 sizing_method: document.getElementById('cfg-sizing').value,
                 fixed_lot: parseFloat(document.getElementById('cfg-fixed-lot').value),
                 risk_pct: parseFloat(document.getElementById('cfg-risk-pct').value) / 100,
-                mt5_login: document.getElementById('cfg-mt5-login').value || null,
-                mt5_password: document.getElementById('cfg-mt5-password').value || null,
-                mt5_server: document.getElementById('cfg-mt5-server').value || null,
-                mt5_path: document.getElementById('cfg-mt5-path').value || null,
             };
+            if (broker === 'mt5') {
+                config.mt5_login = document.getElementById('cfg-mt5-login').value || null;
+                config.mt5_password = document.getElementById('cfg-mt5-password').value || null;
+                config.mt5_server = document.getElementById('cfg-mt5-server').value || null;
+                config.mt5_path = document.getElementById('cfg-mt5-path').value || null;
+            } else {
+                config.binance_api_key = document.getElementById('cfg-binance-api-key').value || null;
+                config.binance_api_secret = document.getElementById('cfg-binance-api-secret').value || null;
+                config.binance_testnet = document.getElementById('cfg-binance-testnet').value === 'true';
+                config.binance_leverage = parseInt(document.getElementById('cfg-binance-leverage').value) || 10;
+            }
+            return config;
         }
 
         async function createSession() {
@@ -643,7 +701,7 @@
                 html += `
                 <div class="session-card ${statusClass}">
                     <div class="session-card-header">
-                        <span class="session-name">${cfg.symbol || '?'} ${cfg.timeframe || '?'}</span>
+                        <span class="session-name">${cfg.symbol || '?'} ${cfg.timeframe || '?'} ${cfg.broker === 'binance' ? '<span style="color:#f0b90b;font-size:0.7rem;">BINANCE</span>' : '<span style="color:#94a3b8;font-size:0.7rem;">MT5</span>'}</span>
                         <span class="session-status status-${statusClass}">${statusClass}</span>
                     </div>
                     <div class="session-info">
@@ -670,7 +728,7 @@
 
                 // MT5 account info (from first session with it)
                 if (s.account && document.getElementById('mt5-status').style.display === 'none') {
-                    renderAccountInfo(s.account);
+                    renderAccountInfo(s.account, cfg.broker || 'mt5');
                 }
 
                 // Trade log
@@ -697,16 +755,18 @@
             return map[signal] || signal;
         }
 
-        function renderAccountInfo(acct) {
+        function renderAccountInfo(acct, broker) {
             document.getElementById('mt5-status').style.display = '';
+            const brokerName = broker === 'binance' ? 'Binance Futures' : 'MT5';
+            document.getElementById('mt5-status').querySelector('h3').textContent = `Compte ${brokerName}`;
             document.getElementById('mt5-info').innerHTML = `
-                <div><span class="label">Compte:</span> <span class="value">${acct.login}</span></div>
-                <div><span class="label">Serveur:</span> <span class="value">${acct.server}</span></div>
-                <div><span class="label">Balance:</span> <span class="value">${acct.currency} ${acct.balance.toFixed(2)}</span></div>
-                <div><span class="label">Equite:</span> <span class="value">${acct.currency} ${acct.equity.toFixed(2)}</span></div>
-                <div><span class="label">Marge Libre:</span> <span class="value">${acct.currency} ${acct.free_margin.toFixed(2)}</span></div>
-                <div><span class="label">PnL:</span> <span class="value ${acct.profit >= 0 ? 'positive' : 'negative'}">${acct.profit.toFixed(2)}</span></div>
-                <div><span class="label">Levier:</span> <span class="value">1:${acct.leverage}</span></div>
+                <div><span class="label">Compte:</span> <span class="value">${acct.login || '-'}</span></div>
+                <div><span class="label">Serveur:</span> <span class="value">${acct.server || '-'}</span></div>
+                <div><span class="label">Balance:</span> <span class="value">${acct.currency || 'USDT'} ${acct.balance.toFixed(2)}</span></div>
+                <div><span class="label">Equite:</span> <span class="value">${acct.currency || 'USDT'} ${acct.equity.toFixed(2)}</span></div>
+                <div><span class="label">Marge Libre:</span> <span class="value">${acct.currency || 'USDT'} ${(acct.free_margin || 0).toFixed(2)}</span></div>
+                <div><span class="label">PnL:</span> <span class="value ${acct.profit >= 0 ? 'positive' : 'negative'}">${(acct.profit || 0).toFixed(2)}</span></div>
+                <div><span class="label">Levier:</span> <span class="value">1:${acct.leverage || '?'}</span></div>
             `;
         }
 

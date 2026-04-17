@@ -13,12 +13,13 @@ from datetime import datetime, date
 class SessionLogger:
     """Logger append-only pour une session de trading live."""
 
-    def __init__(self, session_id, symbol, timeframe, model_key, model_name, log_dir="logs"):
+    def __init__(self, session_id, symbol, timeframe, model_key, model_name, log_dir="logs", broker="mt5"):
         self.session_id = session_id
         self.symbol = symbol
         self.timeframe = timeframe
         self.model_key = model_key
         self.model_name = model_name
+        self.broker = broker
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,6 +60,7 @@ class SessionLogger:
             "timeframe": self.timeframe,
             "model_key": self.model_key,
             "model_name": self.model_name,
+            "broker": self.broker,
             "timestamp": datetime.now().isoformat(),
         }
         self._write_line(header)
@@ -70,6 +72,7 @@ class SessionLogger:
             "session_id": self.session_id,
             "model_key": self.model_key,
             "model_name": self.model_name,
+            "broker": self.broker,
             "action": action,
             "direction": direction,
             "price": price,
@@ -94,6 +97,7 @@ class SessionLogger:
             "session_id": self.session_id,
             "model_key": self.model_key,
             "model_name": self.model_name,
+            "broker": self.broker,
             "signal": signal,
             "predicted_return": round(predicted_return, 6),
             "predicted_close": round(predicted_close, 4),
@@ -108,6 +112,7 @@ class SessionLogger:
             "session_id": self.session_id,
             "model_key": self.model_key,
             "model_name": self.model_name,
+            "broker": self.broker,
             "equity": round(equity, 2),
             "balance": round(balance, 2),
             "timestamp": datetime.now().isoformat(),
@@ -121,6 +126,7 @@ class SessionLogger:
                 "session_id": self.session_id,
                 "model_key": self.model_key,
                 "model_name": self.model_name,
+                "broker": self.broker,
                 "timestamp": datetime.now().isoformat(),
             })
             self._file.close()

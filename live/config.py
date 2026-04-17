@@ -14,6 +14,9 @@ DIRECTION_LONG_SHORT = "long_short"
 SIZING_FIXED = "fixed"
 SIZING_PERCENT = "percent"
 
+BROKER_MT5 = "mt5"
+BROKER_BINANCE = "binance"
+
 PRESETS = {
     "M1": {
         "lookback": 480,
@@ -87,6 +90,9 @@ class TradingConfig:
     model_name: str = ""
     device: str = "cuda"
 
+    # Broker
+    broker: str = BROKER_MT5
+
     # Prediction parameters
     lookback: int = 400
     pred_len: int = 120
@@ -110,7 +116,7 @@ class TradingConfig:
     risk_pct: float = 0.01
     max_lot: float = 10.0
 
-    # Commission (MT5 va les gerer, mais pour le suivi)
+    # Commission
     commission_per_trade: float = 0.07
 
     # MT5 connection
@@ -118,6 +124,12 @@ class TradingConfig:
     mt5_password: Optional[str] = None
     mt5_server: Optional[str] = None
     mt5_path: Optional[str] = None
+
+    # Binance connection
+    binance_api_key: Optional[str] = None
+    binance_api_secret: Optional[str] = None
+    binance_testnet: bool = True
+    binance_leverage: int = 10
 
     # Internal
     step_size: int = 60
@@ -136,6 +148,7 @@ class TradingConfig:
             "model_key": self.model_key,
             "model_name": self.model_name,
             "device": self.device,
+            "broker": self.broker,
             "lookback": self.lookback,
             "pred_len": self.pred_len,
             "temperature": self.temperature,
@@ -151,6 +164,8 @@ class TradingConfig:
             "fixed_lot": self.fixed_lot,
             "risk_pct": self.risk_pct,
             "max_lot": self.max_lot,
+            "binance_testnet": self.binance_testnet,
+            "binance_leverage": self.binance_leverage,
         }
 
     @classmethod
@@ -158,8 +173,10 @@ class TradingConfig:
         c = cls()
         for k, v in d.items():
             if hasattr(c, k) and v is not None:
-                if k in ('mt5_login',) and isinstance(v, str) and v.strip() == '':
+                if k in ('mt5_login', 'mt5_login') and isinstance(v, str) and v.strip() == '':
                     continue
+                if k in ('binance_api_key', 'binance_api_secret') and isinstance(v, str) and v.strip() == '':
+                    v = None
                 setattr(c, k, v)
         return c
 

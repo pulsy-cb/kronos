@@ -1,6 +1,6 @@
 """
 LiveTrader - Boucle de trading live avec Kronos.
-Genere des signaux de trading en temps reel et execute les ordres via MT5.
+Genere des signaux de trading en temps reel et execute les ordres via un broker.
 """
 
 import torch
@@ -11,16 +11,16 @@ import time
 import threading
 import traceback
 
-from data.mt5_live import MT5LiveFeed, TF_SECONDS
-from live.executor import MT5Executor
+from data.broker_feed import BrokerFeed, TF_SECONDS
+from live.broker_executor import BrokerExecutor
 from live.config import TradingConfig, DIRECTION_LONG_SHORT, DIRECTION_LONG_ONLY
 from live.logger import SessionLogger
 
 
 class LiveTrader:
-    """Boucle de trading live connectee a MT5."""
+    """Boucle de trading live connectee a un broker."""
 
-    def __init__(self, config: TradingConfig, predictor, feed: MT5LiveFeed, executor: MT5Executor, logger: SessionLogger = None):
+    def __init__(self, config: TradingConfig, predictor, feed: BrokerFeed, executor: BrokerExecutor, logger: SessionLogger = None):
         self.config = config
         self.predictor = predictor
         self.feed = feed
@@ -60,7 +60,7 @@ class LiveTrader:
             return False, "Deja en cours"
 
         if not self.feed.is_connected():
-            return False, "MT5 non connecte"
+            return False, "Broker non connecte"
 
         self._stop_event.clear()
         self._pause_event.set()
@@ -139,7 +139,7 @@ class LiveTrader:
 
                 if not self.feed.is_connected():
                     self.status = "error"
-                    self.error_message = "MT5 deconnecte"
+                    self.error_message = "Broker deconnecte"
                     time.sleep(5)
                     continue
 

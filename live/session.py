@@ -1,6 +1,6 @@
 """
 TradingSessionManager - Gere plusieurs sessions de trading live
-avec differentes instances MT5 et modeles Kronos.
+avec differentes instances broker et modeles Kronos.
 """
 
 import os
@@ -10,9 +10,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional
 
-from live.config import TradingConfig
+from live.config import TradingConfig, BROKER_MT5, BROKER_BINANCE
 from live.trader import LiveTrader
 from live.logger import SessionLogger, write_session_summary
+from live.broker_factory import create_feed, create_executor, connect_feed
 
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -81,32 +82,24 @@ class TradingSessionManager:
         return session_id
 
     def start_session(self, session_id):
-        """Connecte MT5, charge le modele, et demarre le trading."""
-        from data.mt5_live import MT5LiveFeed
-        from live.executor import MT5Executor
-
+        """Connecte le broker, charge le modele, et demarre le trading."""
         session = self.sessions.get(session_id)
         if session is None:
             return False, f"Session {session_id} introuvable"
 
         config = session.config
 
-        # Step 1: Connect MT5
+        # Step 1: Connect broker
         session.status = "connecting"
-        feed = MT5LiveFeed()
-        success, msg = feed.connect(
-            login=config.mt5_login,
-            password=config.mt5_password,
-            server=config.mt5_server,
-            path=config.mt5_path,
-        )
+        feed = create_feed(config)
+        success, msg = connect_feed(feed, config)
         if not success:
             session.status = "error"
             session.error_message = msg
             return False, msg
 
         session.feed = feed
-        session.executor = MT5Executor()
+        session.executor = create_executor(config)
 
         # Step 2: Load model
         session.status = "loading_model"
@@ -126,6 +119,7 @@ class TradingSessionManager:
             timeframe=config.timeframe,
             model_key=config.model_key,
             model_name=config.model_name,
+            broker=config.broker,
         )
 
         # Step 4: Create trader and start

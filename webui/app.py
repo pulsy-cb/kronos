@@ -1084,7 +1084,7 @@ def live_sessions():
 def live_create():
     """Create a new trading session."""
     if not LIVE_AVAILABLE or live_manager is None:
-        return jsonify({'error': 'Live trading module not available. Make sure MetaTrader5 is installed.'}), 400
+        return jsonify({'error': 'Live trading module not available. Make sure the required broker package is installed.'}), 400
 
     config_dict = request.get_json()
     if not config_dict:
