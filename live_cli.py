@@ -304,83 +304,291 @@ class BinancePublicFeed:
             return None
 
 
-# ─── Polymarket Mock Tracker ─────────────────────────────────────────────
-class PolymarketMockTracker:
+# ─── Polymarket Live Tracker (Real API + 1€ bets) ──────────────────────
+class PolymarketLiveTracker:
     """
-    Mock Polymarket tracker — utilise les predictions Kronos pour simuler
-    des positions Polymarket en paper trading.
+    Polymarket tracker avec VRAIES côtes de l'API Polymarket.
     
-    Pour les marchés crypto sur Polymarket, on peut lier les prédictions
-    de prix Kronos aux marchés "Will BTC be above $X at Y time?".
+    Pour chaque trade Kronos, on place virtuellement 1€ sur le marché
+    Polymarket correspondant (ex: "Will BTC be above $74k on Apr 20?").
+    On utilise les vraies probas Polymarket pour calculer les gains/pertes.
     """
 
     def __init__(self):
-        self.positions = []
-        self.results = []
+        self.positions = []      # Open 1€ bets
+        self.results = []        # Settled bets with P&L
+        self.cached_markets = {} # symbol -> list of markets
+        self.last_fetch = {}     # symbol -> timestamp of last API call
+        self.bet_amount = 1.0    # 1€ per bet
+        self.total_wagered = 0.0
+        self.total_pnl = 0.0
+        self._import_requests()
+
+    def _import_requests(self):
+        global _requests
+        try:
+            import requests as _requests_mod
+            _requests = _requests_mod
+        except ImportError:
+            _requests = None
+
+    def _fetch_markets(self, symbol):
+        """Récupère les vrais marchés Polymarket pour BTC ou ETH."""
+        if _requests is None:
+            return []
+        
+        now = time.time()
+        # Cache for 5 minutes
+        if symbol in self.last_fetch and (now - self.last_fetch[symbol]) < 300:
+            return self.cached_markets.get(symbol, [])
+        
+        query = "bitcoin above" if "BTC" in symbol else "ethereum above"
+        try:
+            resp = _requests.get(
+                f"https://gamma-api.polymarket.com/public-search",
+                params={"q": query, "limit": 10},
+                timeout=10
+            )
+            if resp.status_code != 200:
+                return self.cached_markets.get(symbol, [])
+            
+            data = resp.json()
+            markets = []
+            for ev in data.get("events", []):
+                for m in ev.get("markets", []):
+                    try:
+                        prices = json.loads(m.get("outcomePrices", "[]"))
+                        tokens = json.loads(m.get("clobTokenIds", "[]"))
+                        if not prices or len(prices) < 2:
+                            continue
+                        yes_price = float(prices[0])
+                        # Only keep markets in the interesting range (5%-95%)
+                        if 0.05 < yes_price < 0.95:
+                            markets.append({
+                                "question": m.get("question", ""),
+                                "yes_price": yes_price,
+                                "no_price": float(prices[1]),
+                                "token_yes": tokens[0] if tokens else "",
+                                "token_no": tokens[1] if len(tokens) > 1 else "",
+                                "condition_id": m.get("conditionId", ""),
+                                "volume": m.get("volume", 0),
+                            })
+                    except (json.JSONDecodeError, ValueError, IndexError):
+                        continue
+            
+            self.cached_markets[symbol] = markets
+            self.last_fetch[symbol] = now
+            return markets
+        except Exception:
+            return self.cached_markets.get(symbol, [])
+
+    def _get_realtime_price(self, token_id):
+        """Récupère le prix temps réel d'un token Polymarket via CLOB API."""
+        if _requests is None or not token_id:
+            return None
+        try:
+            resp = _requests.get(
+                f"https://clob.polymarket.com/price",
+                params={"token_id": token_id, "side": "buy"},
+                timeout=5
+            )
+            if resp.status_code == 200:
+                return float(resp.json().get("price", 0))
+        except Exception:
+            pass
+        return None
 
     def evaluate_prediction(self, symbol, current_price, predicted_price, threshold_pct=0.001):
         """
-        Simule une prédiction Polymarket: "Le prix va-t-il monter/baisser?"
+        Pour chaque prédiction Kronos, trouve le marché Polymarket pertinent
+        et évalue un bet virtuel de 1€.
         
-        Returns: dict with market simulation
+        Strategy: 
+        - Kronos prédit UP -> on achète "Yes" sur le marché "above $X" 
+          où X est juste en dessous du prix actuel
+        - Kronos prédit DOWN -> on achète "No" sur le marché "above $X"
+          où X est juste au-dessus du prix actuel
         """
         predicted_return = (predicted_price - current_price) / current_price
-        
+
         if predicted_return > threshold_pct:
             direction = "UP"
-            confidence = min(0.95, 0.5 + abs(predicted_return) * 100)
         elif predicted_return < -threshold_pct:
             direction = "DOWN"
-            confidence = min(0.95, 0.5 + abs(predicted_return) * 100)
         else:
             direction = "FLAT"
-            confidence = 0.5
 
-        # Simulate a Polymarket "Yes" price for the direction
-        yes_price = round(confidence, 3)
+        # Fetch real Polymarket markets
+        pm_markets = self._fetch_markets(symbol)
+
+        # Find the best matching market
+        best_market = None
+        best_match_score = -1
+
+        for m in pm_markets:
+            q = m["question"].lower()
+            # Extract the price level from the question
+            # e.g. "Will the price of Bitcoin be above $74,000 on April 20?"
+            import re
+            price_match = re.search(r'\$([0-9,]+)', q)
+            if not price_match:
+                continue
+            level = int(price_match.group(1).replace(",", ""))
+            
+            if direction == "UP":
+                # For UP prediction, find "above $X" where X is just below current price
+                # We buy "Yes" — if price stays above X, we win
+                if level < current_price:
+                    score = current_price - level  # closer = better
+                    # Pick the closest level below current price
+                    if score < best_match_score or best_match_score == -1:
+                        best_match_score = score
+                        best_market = m
+            elif direction == "DOWN":
+                # For DOWN prediction, find "above $X" where X is just above current price
+                # We buy "No" — if price stays below X, we win
+                if level > current_price:
+                    score = level - current_price
+                    if score < best_match_score or best_match_score == -1:
+                        best_match_score = score
+                        best_market = m
+
+        if best_market and direction != "FLAT":
+            # Get real-time price for more accuracy
+            if direction == "UP":
+                token_id = best_market["token_yes"]
+                buy_price = self._get_realtime_price(token_id) or best_market["yes_price"]
+                side = "Yes"
+            else:
+                token_id = best_market["token_no"]
+                buy_price = self._get_realtime_price(token_id) or best_market["no_price"]
+                side = "No"
+
+            # Calculate potential payout for 1€ bet
+            # On Polymarket: you buy shares at price P, each share pays $1 if correct
+            # So for 1€ bet: you get (1/buy_price) shares, each worth $1 if win
+            shares = self.bet_amount / buy_price if buy_price > 0 else 0
+            potential_payout = shares  # $1 per share if correct
+            potential_profit = potential_payout - self.bet_amount
+
+            position = {
+                "symbol": symbol,
+                "direction": direction,
+                "current_price": current_price,
+                "predicted_price": round(predicted_price, 2),
+                "predicted_return": round(predicted_return, 6),
+                "pm_question": best_market["question"],
+                "pm_side": side,
+                "pm_buy_price": round(buy_price, 4),
+                "bet_amount": self.bet_amount,
+                "shares": round(shares, 4),
+                "potential_payout": round(potential_payout, 2),
+                "potential_profit": round(potential_profit, 2),
+                "token_id": token_id,
+                "timestamp": datetime.now().isoformat(),
+            }
+            self.positions.append(position)
+            self.total_wagered += self.bet_amount
+
+            return {
+                "direction": direction,
+                "polymarket_market": best_market["question"][:50],
+                "polymarket_side": side,
+                "polymarket_buy_price": round(buy_price, 4),
+                "potential_profit_eur": round(potential_profit, 2),
+                "position": position,
+            }
+
+        # Fallback: no matching market or FLAT
+        confidence = 0.5
+        if direction == "UP":
+            confidence = min(0.95, 0.5 + abs(predicted_return) * 100)
+        elif direction == "DOWN":
+            confidence = min(0.95, 0.5 + abs(predicted_return) * 100)
 
         return {
-            "symbol": symbol,
-            "current_price": current_price,
-            "predicted_price": round(predicted_price, 2),
-            "predicted_return": round(predicted_return, 6),
             "direction": direction,
-            "polymarket_yes_price": yes_price,
-            "polymarket_no_price": round(1 - yes_price, 3),
-            "timestamp": datetime.now().isoformat(),
+            "polymarket_yes_price": round(confidence, 3),
+            "polymarket_no_price": round(1 - confidence, 3),
+            "polymarket_market": "no matching market",
+            "position": None,
         }
 
-    def record_outcome(self, position, actual_price):
-        """Record the actual outcome when the prediction period ends."""
-        direction = position["direction"]
-        entry_price = position["current_price"]
+    def settle_position(self, position, actual_price):
+        """
+        Règle un bet: le marché "above $X" serait-il résolu en notre faveur?
         
-        if direction == "UP":
-            correct = actual_price > entry_price
-        elif direction == "DOWN":
-            correct = actual_price < entry_price
+        On compare actual_price au niveau du marché pour déterminer le résultat.
+        """
+        import re
+        q = position["pm_question"].lower()
+        price_match = re.search(r'\$([0-9,]+)', q)
+        if not price_match:
+            return None
+        level = int(price_match.group(1).replace(",", ""))
+
+        # Would "above $X" resolve Yes or No?
+        above_resolved = actual_price > level
+
+        # Our side determines if we win
+        if position["pm_side"] == "Yes":
+            won = above_resolved
         else:
-            correct = True  # FLAT always "correct" in this sim
+            won = not above_resolved
+
+        if won:
+            payout = position["shares"]  # Each share pays $1
+            profit = payout - position["bet_amount"]
+        else:
+            payout = 0
+            profit = -position["bet_amount"]  # Lost the 1€
+
+        self.total_pnl += profit
 
         result = {
-            "position": position,
+            "question": position["pm_question"],
+            "side": position["pm_side"],
+            "buy_price": position["pm_buy_price"],
+            "bet_amount": position["bet_amount"],
+            "level": level,
             "actual_price": actual_price,
-            "correct": correct,
-            "would_have_profit": position["polymarket_yes_price"] - (1 if correct else 0),
+            "won": won,
+            "payout": round(payout, 2),
+            "profit_eur": round(profit, 2),
+            "timestamp": datetime.now().isoformat(),
         }
         self.results.append(result)
+        # Remove from open positions
+        if position in self.positions:
+            self.positions.remove(position)
         return result
 
+    def settle_all_expired(self, current_prices):
+        """Règle les positions dont le marché devrait être expiré."""
+        settled = []
+        for pos in list(self.positions):
+            # Markets are typically daily — settle after ~30min for our 5-min pred window
+            age = (datetime.now() - datetime.fromisoformat(pos["timestamp"])).total_seconds()
+            if age > 300:  # 5 minutes passed (matches pred_len=5)
+                symbol = pos["symbol"]
+                actual_price = current_prices.get(symbol, pos["current_price"])
+                result = self.settle_position(pos, actual_price)
+                if result:
+                    settled.append(result)
+        return settled
+
     def get_summary(self):
-        if not self.results:
-            return {"total": 0, "correct": 0, "accuracy": 0}
-        
-        total = len(self.results)
-        correct = sum(1 for r in self.results if r["correct"])
+        total_bets = len(self.results)
+        wins = sum(1 for r in self.results if r["won"])
+        open_bets = len(self.positions)
         return {
-            "total": total,
-            "correct": correct,
-            "accuracy": round(correct / total * 100, 1),
+            "total_bets": total_bets,
+            "wins": wins,
+            "accuracy": round(wins / total_bets * 100, 1) if total_bets > 0 else 0,
+            "open_bets": open_bets,
+            "total_wagered_eur": round(self.total_wagered, 2),
+            "total_pnl_eur": round(self.total_pnl, 2),
+            "roi_pct": round(self.total_pnl / self.total_wagered * 100, 1) if self.total_wagered > 0 else 0,
         }
 
 
@@ -476,7 +684,7 @@ def run_trading_loop(args):
     engine = PaperEngine(capital=capital, risk_pct=args.risk_pct)
 
     # Initialize Polymarket mock
-    polymarket = PolymarketMockTracker()
+    polymarket = PolymarketLiveTracker()
 
     # Initialize data feed
     feed = BinancePublicFeed()
@@ -583,8 +791,15 @@ def run_trading_loop(args):
                 f"Close={current_close:.2f} | Pred={predicted_end_close:.2f} | "
                 f"Ret={predicted_return:.6f} ({predicted_return*100:.4f}%) | "
                 f"Signal={signal} | PredTime={pred_time:.2f}s | "
-                f"PM-{pm['direction']}@{pm['polymarket_yes_price']:.3f}"
+                f"PM-{pm['direction']}"
             )
+            # Log Polymarket bet details if we have a real market
+            if pm.get("polymarket_market") and pm["polymarket_market"] != "no matching market":
+                logger.info(
+                    f"  ↳ PM Bet 1€: {pm['polymarket_side']} @ {pm['polymarket_buy_price']:.3f} "
+                    f"on \"{pm['polymarket_market']}\" | "
+                    f"Profit potentiel: {pm['potential_profit_eur']:+.2f}€"
+                )
 
             # ─── Execute signal ───
             if signal == "exit" and engine.position is not None:
@@ -611,6 +826,16 @@ def run_trading_loop(args):
                 success, msg = engine.close_position(current_close, reason=reason)
                 logger.info(f"  ↳ RISK CLOSE: {msg}")
 
+            # ─── Settle expired Polymarket bets (after 5 min) ───
+            settled = polymarket.settle_all_expired({symbol: current_close})
+            for s in settled:
+                emoji = "✅" if s["won"] else "❌"
+                logger.info(
+                    f"  ↳ PM SETTLED {emoji}: {s['side']} @ {s['buy_price']:.3f} "
+                    f"on \"{s['question'][:50]}\" | "
+                    f"PnL: {s['profit_eur']:+.2f}€"
+                )
+
             # ─── Equity tracking ───
             equity = engine.get_equity(current_close)
             engine.equity_history.append({
@@ -629,8 +854,11 @@ def run_trading_loop(args):
                           f"(PnL: ${summary['total_pnl']:.4f} = {summary['total_pnl_pct']:.4f}%)")
                 logger.info(f"   Trades: {summary['total_trades']} | "
                           f"Win rate: {summary['win_rate']:.1f}%")
-                logger.info(f"   Polymarket mock accuracy: {pm_summary.get('accuracy', 0)}% "
-                          f"({pm_summary.get('correct', 0)}/{pm_summary.get('total', 0)})")
+                logger.info(f"   Polymarket: {pm_summary.get('accuracy', 0)}% accuracy "
+                          f"({pm_summary.get('wins', 0)}/{pm_summary.get('total_bets', 0)}) | "
+                          f"PnL: {pm_summary.get('total_pnl_eur', 0):+.2f}€ | "
+                          f"Misé: {pm_summary.get('total_wagered_eur', 0):.2f}€ | "
+                          f"ROI: {pm_summary.get('roi_pct', 0):.1f}%")
                 logger.info("-" * 60)
 
             # ─── Save results to JSON ───
@@ -677,8 +905,11 @@ def run_trading_loop(args):
     logger.info(f"Trades:     {summary['total_trades']} | "
                f"Win rate: {summary['win_rate']:.1f}%")
     logger.info(f"Commissions: ${summary['total_commission']:.4f}")
-    logger.info(f"PM mock:    accuracy={pm_summary.get('accuracy', 0)}% "
-               f"({pm_summary.get('correct', 0)}/{pm_summary.get('total', 0)})")
+    logger.info(f"Polymarket: accuracy={pm_summary.get('accuracy', 0)}% "
+               f"({pm_summary.get('wins', 0)}/{pm_summary.get('total_bets', 0)}) | "
+               f"PnL: {pm_summary.get('total_pnl_eur', 0):+.2f}€ | "
+               f"Misé: {pm_summary.get('total_wagered_eur', 0):.2f}€ | "
+               f"ROI: {pm_summary.get('roi_pct', 0):.1f}%")
     logger.info(f"Log file:   {log_file}")
     logger.info("=" * 60)
 
