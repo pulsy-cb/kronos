@@ -206,7 +206,7 @@ class TradingSessionManager:
         return session.to_dict()
 
     def get_all_sessions_state(self):
-        return {sid: s.to_dict() for sid, s in self.sessions.items()}
+        return {sid: s.to_dict() for sid, s in list(self.sessions.items())}
 
     def delete_session(self, session_id):
         session = self.sessions.get(session_id)

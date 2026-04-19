@@ -7,6 +7,8 @@ Supporte le mode testnet et les SL/TP natifs des futures.
 import time
 from datetime import datetime
 import threading
+import os
+from pathlib import Path
 
 from live.broker_executor import BrokerExecutor
 
@@ -22,9 +24,35 @@ class BinanceExecutor(BrokerExecutor):
         self._client = None
         self._lock = threading.Lock()
 
+    def _load_env(self):
+        """Charge les variables d'environnement depuis .env si pas deja fait."""
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            env_path = Path(__file__).parent.parent / ".env"
+            if env_path.exists():
+                for line in env_path.read_text().strip().splitlines():
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ[k.strip()] = v.strip()
+
     def _get_client(self):
-        """Lazy init du client Binance."""
+        """Lazy init du client Binance. Lit .env si pas de credentials."""
         if self._client is None:
+            if not self._api_key or not self._api_secret:
+                self._load_env()
+                env_key = os.getenv("BINANCE_API_KEY", "")
+                env_secret = os.getenv("BINANCE_API_SECRET", "")
+                if env_key and env_secret:
+                    self._api_key = env_key
+                    self._api_secret = env_secret
+                env_testnet = os.getenv("BINANCE_TESTNET", "").lower()
+                if env_testnet in ("true", "1", "yes"):
+                    self._testnet = True
+                elif env_testnet in ("false", "0", "no"):
+                    self._testnet = False
+
             from binance.client import Client
             if self._testnet:
                 self._client = Client(
@@ -120,14 +148,40 @@ class BinanceExecutor(BrokerExecutor):
             status = order.get("status", "")
 
             if status == "NEW":
-                time.sleep(0.5)
+                for _ in range(10):
+                    time.sleep(0.5)
+                    try:
+                        check = client.futures_get_order(symbol=symbol, orderId=order_id)
+                        if check.get("status") == "FILLED":
+                            fill_price = float(check.get("avgPrice", fill_price))
+                            fill_qty = float(check.get("executedQty", fill_qty))
+                            break
+                    except Exception:
+                        pass
+
+            time.sleep(1.0)
+
+            for _ in range(10):
                 try:
-                    check = client.futures_get_order(symbol=symbol, orderId=order_id)
-                    if check.get("status") == "FILLED":
-                        fill_price = float(check.get("avgPrice", fill_price))
-                        fill_qty = float(check.get("executedQty", fill_qty))
+                    positions = client.futures_position_information(symbol=symbol)
+                    has_pos = any(abs(float(p.get("positionAmt", 0))) > 1e-8 for p in positions)
+                    if has_pos:
+                        break
                 except Exception:
                     pass
+                time.sleep(0.5)
+
+            try:
+                existing = client.futures_get_open_orders(symbol=symbol)
+                for o in existing:
+                    if o.get("type") in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
+                        try:
+                            client.futures_cancel_order(symbol=symbol, orderId=o["orderId"])
+                        except Exception:
+                            pass
+                time.sleep(0.3)
+            except Exception:
+                pass
 
             if sl_price is not None and sl_price > 0:
                 sl_price_rounded = self._round_price(symbol, sl_price)
@@ -138,7 +192,9 @@ class BinanceExecutor(BrokerExecutor):
                         side=sl_side,
                         type="STOP_MARKET",
                         stopPrice=str(sl_price_rounded),
-                        closePosition=True,
+                        quantity=self._round_quantity(symbol, fill_qty),
+                        reduceOnly=True,
+                        workingType="MARK_PRICE",
                     )
                 except Exception as e:
                     print(f"SL non place: {e}")
@@ -152,7 +208,9 @@ class BinanceExecutor(BrokerExecutor):
                         side=tp_side,
                         type="TAKE_PROFIT_MARKET",
                         stopPrice=str(tp_price_rounded),
-                        closePosition=True,
+                        quantity=self._round_quantity(symbol, fill_qty),
+                        reduceOnly=True,
+                        workingType="MARK_PRICE",
                     )
                 except Exception as e:
                     print(f"TP non place: {e}")

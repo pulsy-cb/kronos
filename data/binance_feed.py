@@ -7,8 +7,10 @@ Supporte le mode testnet pour les tests.
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from pathlib import Path
 import time
 import threading
+import os
 
 from data.broker_feed import BrokerFeed
 
@@ -34,10 +36,39 @@ class BinanceLiveFeed(BrokerFeed):
         self._connected = False
         self._lock = threading.Lock()
 
+    def _load_env(self):
+        """Charge les variables d'environnement depuis .env si pas deja fait."""
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            env_path = Path(__file__).parent.parent / ".env"
+            if env_path.exists():
+                for line in env_path.read_text().strip().splitlines():
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ[k.strip()] = v.strip()
+
     def connect(self, **kwargs):
-        """Connecte a Binance Futures (testnet ou live)."""
+        """Connecte a Binance Futures (testnet ou live). Lit .env si pas de credentials."""
         from binance.client import Client
         from binance.exceptions import BinanceAPIException
+
+        if not self._api_key or not self._api_secret:
+            self._load_env()
+            env_key = os.getenv("BINANCE_API_KEY", "")
+            env_secret = os.getenv("BINANCE_API_SECRET", "")
+            if env_key and env_secret:
+                self._api_key = env_key
+                self._api_secret = env_secret
+            env_testnet = os.getenv("BINANCE_TESTNET", "").lower()
+            if env_testnet in ("true", "1", "yes"):
+                self._testnet = True
+            elif env_testnet in ("false", "0", "no"):
+                self._testnet = False
+
+        if not self._api_key or not self._api_secret:
+            return False, "Binance: API key/secret manquants. Fournissez-les ou configurez .env"
 
         try:
             if self._testnet:
@@ -88,7 +119,7 @@ class BinanceLiveFeed(BrokerFeed):
             total_unrealized = float(account.get("totalUnrealizedProfit", 0))
             available = float(account.get("availableBalance", 0))
             total_margin = float(account.get("totalMarginBalance", 0))
-            leverage = int(account.get("maxWithdrawAmount", 0))
+            leverage = int(float(account.get("maxWithdrawAmount", 0)))
 
             return {
                 "login": self._api_key[-8:] if self._api_key and len(self._api_key) > 8 else "binance",
