@@ -18,7 +18,7 @@ import time
 import json
 import logging
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import torch
@@ -75,12 +75,12 @@ TF_SECONDS = {
 
 PRESETS = {
     "M1": {
-        "lookback": 120, "pred_len": 30, "signal_threshold": 0.0008,
+        "lookback": 120, "pred_len": 5, "signal_threshold": 0.0008,
         "exit_threshold": 0.0005, "stop_loss_pct": 0.0025,
         "take_profit_pct": 0.005, "max_hold_bars": 120,
     },
     "M5": {
-        "lookback": 120, "pred_len": 120, "signal_threshold": 0.0012,
+        "lookback": 120, "pred_len": 4, "signal_threshold": 0.0012,
         "exit_threshold": 0.0007, "stop_loss_pct": 0.0035,
         "take_profit_pct": 0.007, "max_hold_bars": 144,
     },
@@ -304,93 +304,199 @@ class BinancePublicFeed:
             return None
 
 
-# ─── Polymarket Live Tracker (Real API + 1€ bets) ──────────────────────
-class PolymarketLiveTracker:
+# ─── Polymarket 5-Min "Up or Down" Tracker ──────────────────────────────
+class Polymarket5MinTracker:
     """
-    Polymarket tracker avec VRAIES côtes de l'API Polymarket.
-    
-    Pour chaque trade Kronos, on place virtuellement 1€ sur le marché
-    Polymarket correspondant (ex: "Will BTC be above $74k on Apr 20?").
-    On utilise les vraies probas Polymarket pour calculer les gains/pertes.
+    Polymarket tracker pour les marchés 5-min natifs "Up or Down".
+
+    Ces marchés sont du type "Bitcoin Up or Down - April 20, 6:10AM-6:15AM ET".
+    - Chaque fenêtre fait exactement 5 minutes
+    - Le marché settle automatiquement à la fin de la fenêtre
+    - Les côtes sont ~50/50 (vrai incertitude, pas comme les "above $X" journaliers)
+
+    Slug pattern: btc-updown-5m-{unix_ts} ou eth-updown-5m-{unix_ts}
+    où unix_ts = début de la fenêtre 5-min arrondi à 300s.
     """
 
-    def __init__(self):
-        self.positions = []      # Open 1€ bets
-        self.results = []        # Settled bets with P&L
-        self.cached_markets = {} # symbol -> list of markets
-        self.last_fetch = {}     # symbol -> timestamp of last API call
-        self.bet_amount = 1.0    # 1€ per bet
+    # Map Kronos symbol to Polymarket slug prefix
+    SYMBOL_MAP = {
+        "BTCUSDT": "btc",
+        "ETHUSDT": "eth",
+    }
+
+    def __init__(self, bet_amount=1.0):
+        self.bet_amount = bet_amount
+        self.positions = []       # Open bets (waiting for 5-min window to close)
+        self.results = []         # Settled bets with P&L
         self.total_wagered = 0.0
         self.total_pnl = 0.0
-        self._import_requests()
+        self._session = None
+        self._slug_cache = {}     # slug -> market data
+        self._failed_slugs = set()  # Slugs that returned no market (avoid retrying)
 
-    def _import_requests(self):
-        global _requests
-        try:
-            import requests as _requests_mod
-            _requests = _requests_mod
-        except ImportError:
-            _requests = None
+    def _get_session(self):
+        if self._session is None:
+            import requests
+            self._session = requests.Session()
+            self._session.headers.update({"User-Agent": "Kronos-CLI/2.0"})
+        return self._session
 
-    def _fetch_markets(self, symbol):
-        """Récupère les vrais marchés Polymarket pour BTC ou ETH."""
-        if _requests is None:
-            return []
-        
-        now = time.time()
-        # Cache for 5 minutes
-        if symbol in self.last_fetch and (now - self.last_fetch[symbol]) < 300:
-            return self.cached_markets.get(symbol, [])
-        
-        query = "bitcoin above" if "BTC" in symbol else "ethereum above"
+    def _get_current_window_ts(self):
+        """Retourne le timestamp Unix du début de la fenêtre 5-min actuelle."""
+        now = datetime.now(timezone.utc)
+        # Round down to nearest 300s (5 min)
+        ts = int(now.timestamp()) // 300 * 300
+        return ts
+
+    def _get_next_window_ts(self):
+        """Retourne le timestamp Unix du début de la prochaine fenêtre 5-min."""
+        return self._get_current_window_ts() + 300
+
+    def _build_slug(self, symbol, window_ts):
+        """Construit le slug Polymarket pour une fenêtre donnée."""
+        prefix = self.SYMBOL_MAP.get(symbol, "btc")
+        return f"{prefix}-updown-5m-{window_ts}"
+
+    def _fetch_market(self, symbol, window_ts):
+        """
+        Récupère les infos du marché Polymarket 5-min pour la fenêtre donnée.
+        Retourne dict avec yes_price, no_price, question, token_ids, ou None si pas trouvé.
+        """
+        slug = self._build_slug(symbol, window_ts)
+
+        # Check cache
+        if slug in self._slug_cache:
+            return self._slug_cache[slug]
+
+        # Skip known failures
+        if slug in self._failed_slugs:
+            return None
+
         try:
-            resp = _requests.get(
-                f"https://gamma-api.polymarket.com/public-search",
-                params={"q": query, "limit": 10},
-                timeout=10
+            resp = self._get_session().get(
+                "https://gamma-api.polymarket.com/events",
+                params={"slug": slug},
+                timeout=10,
             )
             if resp.status_code != 200:
-                return self.cached_markets.get(symbol, [])
-            
-            data = resp.json()
-            markets = []
-            for ev in data.get("events", []):
-                for m in ev.get("markets", []):
-                    try:
-                        prices = json.loads(m.get("outcomePrices", "[]"))
-                        tokens = json.loads(m.get("clobTokenIds", "[]"))
-                        if not prices or len(prices) < 2:
-                            continue
-                        yes_price = float(prices[0])
-                        # Only keep markets in the interesting range (5%-95%)
-                        if 0.05 < yes_price < 0.95:
-                            markets.append({
-                                "question": m.get("question", ""),
-                                "yes_price": yes_price,
-                                "no_price": float(prices[1]),
-                                "token_yes": tokens[0] if tokens else "",
-                                "token_no": tokens[1] if len(tokens) > 1 else "",
-                                "condition_id": m.get("conditionId", ""),
-                                "volume": m.get("volume", 0),
-                            })
-                    except (json.JSONDecodeError, ValueError, IndexError):
-                        continue
-            
-            self.cached_markets[symbol] = markets
-            self.last_fetch[symbol] = now
-            return markets
-        except Exception:
-            return self.cached_markets.get(symbol, [])
+                self._failed_slugs.add(slug)
+                return None
 
-    def _get_realtime_price(self, token_id):
-        """Récupère le prix temps réel d'un token Polymarket via CLOB API."""
-        if _requests is None or not token_id:
+            data = resp.json()
+            if not data or not isinstance(data, list) or len(data) == 0:
+                self._failed_slugs.add(slug)
+                return None
+
+            event = data[0]
+            markets = event.get("markets", [])
+            if not markets:
+                self._failed_slugs.add(slug)
+                return None
+
+            # The 5-min up/down market has two outcomes: "Up" and "Down"
+            market_info = {
+                "slug": slug,
+                "question": event.get("title", event.get("question", "")),
+                "window_ts": window_ts,
+                "window_end_ts": window_ts + 300,
+                "up_token_id": None,
+                "down_token_id": None,
+                "up_price": None,  # Price for "Up" outcome (Yes = price goes up)
+                "down_price": None,  # Price for "Down" outcome (Yes = price goes down)
+                "volume": 0,
+            }
+
+            for m in markets:
+                question = m.get("question", "").lower()
+                prices_str = m.get("outcomePrices", "[]")
+                tokens_str = m.get("clobTokenIds", "[]")
+                try:
+                    prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
+                    tokens = json.loads(tokens_str) if isinstance(tokens_str, str) else tokens_str
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+                if "up" in question and not question.startswith("will"):
+                    market_info["up_price"] = float(prices[0]) if prices else None
+                    market_info["up_token_id"] = tokens[0] if tokens else None
+                elif "down" in question and not question.startswith("will"):
+                    market_info["down_price"] = float(prices[0]) if prices else None
+                    market_info["down_token_id"] = tokens[0] if tokens else None
+
+                # Alternative: the market question may just say "Up" or "Down"
+                # as the outcome name in outcomePrices
+                outcomes_str = m.get("outcomes", "[]")
+                try:
+                    outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
+                except (json.JSONDecodeError, TypeError):
+                    outcomes = []
+
+                for i, outcome in enumerate(outcomes):
+                    if isinstance(outcome, str):
+                        if outcome.lower() == "up" and market_info["up_price"] is None:
+                            market_info["up_price"] = float(prices[i]) if i < len(prices) else None
+                            market_info["up_token_id"] = tokens[i] if i < len(tokens) else None
+                        elif outcome.lower() == "down" and market_info["down_price"] is None:
+                            market_info["down_price"] = float(prices[i]) if i < len(prices) else None
+                            market_info["down_token_id"] = tokens[i] if i < len(tokens) else None
+
+                market_info["volume"] = max(market_info["volume"], float(m.get("volume", 0)))
+
+            # Validate we got both prices
+            if market_info["up_price"] is None or market_info["down_price"] is None:
+                # Try alternate API format — sometimes the market is structured as one market with two tokens
+                for m in markets:
+                    prices_str = m.get("outcomePrices", "[]")
+                    tokens_str = m.get("clobTokenIds", "[]")
+                    outcomes_str = m.get("outcomes", "[]")
+                    try:
+                        prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
+                        tokens = json.loads(tokens_str) if isinstance(tokens_str, str) else tokens_str
+                        outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                    if len(prices) >= 2 and len(outcomes) >= 2:
+                        # First outcome might be "Up", second "Down" (or vice versa)
+                        o0, o1 = str(outcomes[0]).lower(), str(outcomes[1]).lower()
+                        if "up" in o0 and "down" in o1:
+                            market_info["up_price"] = float(prices[0])
+                            market_info["down_price"] = float(prices[1])
+                            market_info["up_token_id"] = tokens[0] if tokens else None
+                            market_info["down_token_id"] = tokens[1] if len(tokens) > 1 else None
+                        elif "down" in o0 and "up" in o1:
+                            market_info["down_price"] = float(prices[0])
+                            market_info["up_price"] = float(prices[1])
+                            market_info["down_token_id"] = tokens[0] if tokens else None
+                            market_info["up_token_id"] = tokens[1] if len(tokens) > 1 else None
+
+            # If still no prices, try the CLOB API directly
+            if market_info["up_price"] is None and market_info["up_token_id"]:
+                market_info["up_price"] = self._get_clob_price(market_info["up_token_id"])
+            if market_info["down_price"] is None and market_info["down_token_id"]:
+                market_info["down_price"] = self._get_clob_price(market_info["down_token_id"])
+
+            # Still missing? Mark as failure
+            if market_info["up_price"] is None or market_info["down_price"] is None:
+                self._failed_slugs.add(slug)
+                return None
+
+            self._slug_cache[slug] = market_info
+            return market_info
+
+        except Exception:
+            self._failed_slugs.add(slug)
+            return None
+
+    def _get_clob_price(self, token_id):
+        """Récupère le prix CLOB pour un token donné."""
+        if not token_id:
             return None
         try:
-            resp = _requests.get(
-                f"https://clob.polymarket.com/price",
+            resp = self._get_session().get(
+                "https://clob.polymarket.com/price",
                 params={"token_id": token_id, "side": "buy"},
-                timeout=5
+                timeout=5,
             )
             if resp.status_code == 200:
                 return float(resp.json().get("price", 0))
@@ -398,183 +504,156 @@ class PolymarketLiveTracker:
             pass
         return None
 
-    def evaluate_prediction(self, symbol, current_price, predicted_price, threshold_pct=0.001):
+    def place_bet(self, symbol, kronos_direction, current_price, predicted_price):
         """
-        Pour chaque prédiction Kronos, trouve le marché Polymarket pertinent
-        et évalue un bet virtuel de 1€.
-        
-        Strategy: 
-        - Kronos prédit UP -> on achète "Yes" sur le marché "above $X" 
-          où X est juste en dessous du prix actuel
-        - Kronos prédit DOWN -> on achète "No" sur le marché "above $X"
-          où X est juste au-dessus du prix actuel
+        Place un bet virtuel de 1€ sur le marché 5-min "Up or Down".
+
+        Args:
+            symbol: BTCUSDT ou ETHUSDT
+            kronos_direction: "UP" ou "DOWN" (basé sur la prédiction Kronos)
+            current_price: prix actuel
+            predicted_price: prix prédit par Kronos
+
+        Returns:
+            dict avec les infos du bet, ou None si marché non disponible
         """
         predicted_return = (predicted_price - current_price) / current_price
 
-        if predicted_return > threshold_pct:
-            direction = "UP"
-        elif predicted_return < -threshold_pct:
-            direction = "DOWN"
-        else:
-            direction = "FLAT"
-
-        # Fetch real Polymarket markets
-        pm_markets = self._fetch_markets(symbol)
-
-        # Find the best matching market
-        best_market = None
-        best_match_score = -1
-
-        for m in pm_markets:
-            q = m["question"].lower()
-            # Extract the price level from the question
-            # e.g. "Will the price of Bitcoin be above $74,000 on April 20?"
-            import re
-            price_match = re.search(r'\$([0-9,]+)', q)
-            if not price_match:
-                continue
-            level = int(price_match.group(1).replace(",", ""))
-            
-            if direction == "UP":
-                # For UP prediction, find "above $X" where X is just below current price
-                # We buy "Yes" — if price stays above X, we win
-                if level < current_price:
-                    score = current_price - level  # closer = better
-                    # Pick the closest level below current price
-                    if score < best_match_score or best_match_score == -1:
-                        best_match_score = score
-                        best_market = m
-            elif direction == "DOWN":
-                # For DOWN prediction, find "above $X" where X is just above current price
-                # We buy "No" — if price stays below X, we win
-                if level > current_price:
-                    score = level - current_price
-                    if score < best_match_score or best_match_score == -1:
-                        best_match_score = score
-                        best_market = m
-
-        if best_market and direction != "FLAT":
-            # Get real-time price for more accuracy
-            if direction == "UP":
-                token_id = best_market["token_yes"]
-                buy_price = self._get_realtime_price(token_id) or best_market["yes_price"]
-                side = "Yes"
-            else:
-                token_id = best_market["token_no"]
-                buy_price = self._get_realtime_price(token_id) or best_market["no_price"]
-                side = "No"
-
-            # Calculate potential payout for 1€ bet
-            # On Polymarket: you buy shares at price P, each share pays $1 if correct
-            # So for 1€ bet: you get (1/buy_price) shares, each worth $1 if win
-            shares = self.bet_amount / buy_price if buy_price > 0 else 0
-            potential_payout = shares  # $1 per share if correct
-            potential_profit = potential_payout - self.bet_amount
-
-            position = {
-                "symbol": symbol,
-                "direction": direction,
-                "current_price": current_price,
-                "predicted_price": round(predicted_price, 2),
-                "predicted_return": round(predicted_return, 6),
-                "pm_question": best_market["question"],
-                "pm_side": side,
-                "pm_buy_price": round(buy_price, 4),
-                "bet_amount": self.bet_amount,
-                "shares": round(shares, 4),
-                "potential_payout": round(potential_payout, 2),
-                "potential_profit": round(potential_profit, 2),
-                "token_id": token_id,
-                "timestamp": datetime.now().isoformat(),
+        # Only bet if Kronos has a clear direction (not FLAT)
+        threshold = 0.0003  # Very small threshold — most 5-min moves count
+        if abs(predicted_return) < threshold:
+            return {
+                "direction": "FLAT",
+                "market": "no bet (prediction too flat)",
+                "position": None,
             }
-            self.positions.append(position)
-            self.total_wagered += self.bet_amount
 
+        direction = "UP" if predicted_return > 0 else "DOWN"
+
+        # Get the NEXT 5-min window (we bet on the upcoming window, not current)
+        window_ts = self._get_next_window_ts()
+        market = self._fetch_market(symbol, window_ts)
+
+        if market is None:
             return {
                 "direction": direction,
-                "polymarket_market": best_market["question"][:50],
-                "polymarket_side": side,
-                "polymarket_buy_price": round(buy_price, 4),
-                "potential_profit_eur": round(potential_profit, 2),
-                "position": position,
+                "market": "no matching 5-min market",
+                "position": None,
             }
 
-        # Fallback: no matching market or FLAT
-        confidence = 0.5
+        # Buy the side matching Kronos prediction
         if direction == "UP":
-            confidence = min(0.95, 0.5 + abs(predicted_return) * 100)
-        elif direction == "DOWN":
-            confidence = min(0.95, 0.5 + abs(predicted_return) * 100)
+            buy_price = market["up_price"]
+            token_id = market["up_token_id"]
+            pm_side = "Up"
+        else:
+            buy_price = market["down_price"]
+            token_id = market["down_token_id"]
+            pm_side = "Down"
+
+        if buy_price is None or buy_price <= 0.01:
+            return {
+                "direction": direction,
+                "market": f"price too low or None ({buy_price})",
+                "position": None,
+            }
+
+        # Calculate shares and potential payout
+        shares = self.bet_amount / buy_price
+        potential_payout = shares  # Each share pays €1 if correct
+        potential_profit = potential_payout - self.bet_amount
+
+        position = {
+            "symbol": symbol,
+            "direction": direction,
+            "current_price": current_price,
+            "predicted_price": round(predicted_price, 2),
+            "predicted_return": round(predicted_return, 6),
+            "pm_question": market["question"],
+            "pm_slug": market["slug"],
+            "pm_side": pm_side,
+            "pm_buy_price": round(buy_price, 4),
+            "bet_amount": self.bet_amount,
+            "shares": round(shares, 4),
+            "potential_payout": round(potential_payout, 2),
+            "potential_profit": round(potential_profit, 2),
+            "token_id": token_id,
+            "window_start_ts": window_ts,
+            "window_end_ts": window_ts + 300,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self.positions.append(position)
+        self.total_wagered += self.bet_amount
 
         return {
             "direction": direction,
-            "polymarket_yes_price": round(confidence, 3),
-            "polymarket_no_price": round(1 - confidence, 3),
-            "polymarket_market": "no matching market",
-            "position": None,
+            "polymarket_market": market["question"][:60],
+            "polymarket_side": pm_side,
+            "polymarket_buy_price": round(buy_price, 4),
+            "potential_profit_eur": round(potential_profit, 2),
+            "window_start": datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M"),
+            "window_end": datetime.fromtimestamp(window_ts + 300, tz=timezone.utc).strftime("%H:%M"),
+            "position": position,
         }
-
-    def settle_position(self, position, actual_price):
-        """
-        Règle un bet: le marché "above $X" serait-il résolu en notre faveur?
-        
-        On compare actual_price au niveau du marché pour déterminer le résultat.
-        """
-        import re
-        q = position["pm_question"].lower()
-        price_match = re.search(r'\$([0-9,]+)', q)
-        if not price_match:
-            return None
-        level = int(price_match.group(1).replace(",", ""))
-
-        # Would "above $X" resolve Yes or No?
-        above_resolved = actual_price > level
-
-        # Our side determines if we win
-        if position["pm_side"] == "Yes":
-            won = above_resolved
-        else:
-            won = not above_resolved
-
-        if won:
-            payout = position["shares"]  # Each share pays $1
-            profit = payout - position["bet_amount"]
-        else:
-            payout = 0
-            profit = -position["bet_amount"]  # Lost the 1€
-
-        self.total_pnl += profit
-
-        result = {
-            "question": position["pm_question"],
-            "side": position["pm_side"],
-            "buy_price": position["pm_buy_price"],
-            "bet_amount": position["bet_amount"],
-            "level": level,
-            "actual_price": actual_price,
-            "won": won,
-            "payout": round(payout, 2),
-            "profit_eur": round(profit, 2),
-            "timestamp": datetime.now().isoformat(),
-        }
-        self.results.append(result)
-        # Remove from open positions
-        if position in self.positions:
-            self.positions.remove(position)
-        return result
 
     def settle_all_expired(self, current_prices):
-        """Règle les positions dont le marché devrait être expiré."""
+        """
+        Règle les bets dont la fenêtre 5-min est terminée.
+
+        Pour chaque position expirée, on détermine UP ou DOWN en comparant
+        le prix d'ouverture et de clôture de la fenêtre 5-min.
+        C'est exactement comment Polymarket settle ces marchés.
+        """
+        import requests
+
         settled = []
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+
         for pos in list(self.positions):
-            # Markets are typically daily — settle after ~30min for our 5-min pred window
-            age = (datetime.now() - datetime.fromisoformat(pos["timestamp"])).total_seconds()
-            if age > 300:  # 5 minutes passed (matches pred_len=5)
-                symbol = pos["symbol"]
-                actual_price = current_prices.get(symbol, pos["current_price"])
-                result = self.settle_position(pos, actual_price)
-                if result:
-                    settled.append(result)
+            # Check if the 5-min window has ended
+            if now_ts < pos["window_end_ts"]:
+                continue  # Window still open
+
+            symbol = pos["symbol"]
+            entry_price = pos["current_price"]  # Price at the start of the window
+            current_price = current_prices.get(symbol, entry_price)
+
+            # The real settlement: did price go UP or DOWN during the 5-min window?
+            # We compare the price at window start vs price at window end
+            actual_direction = "UP" if current_price > entry_price else "DOWN"
+
+            # Did our bet win?
+            won = (pos["direction"] == actual_direction)
+
+            if won:
+                payout = pos["shares"]  # Each share pays €1
+                profit = payout - pos["bet_amount"]
+            else:
+                payout = 0
+                profit = -pos["bet_amount"]
+
+            self.total_pnl += profit
+
+            result = {
+                "question": pos["pm_question"],
+                "slug": pos["pm_slug"],
+                "side": pos["pm_side"],
+                "buy_price": pos["pm_buy_price"],
+                "bet_amount": pos["bet_amount"],
+                "entry_price": entry_price,
+                "exit_price": current_price,
+                "actual_direction": actual_direction,
+                "won": won,
+                "payout": round(payout, 2),
+                "profit_eur": round(profit, 2),
+                "window_start": pos["window_start_ts"],
+                "window_end": pos["window_end_ts"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            self.results.append(result)
+            self.positions.remove(pos)
+            settled.append(result)
+
         return settled
 
     def get_summary(self):
@@ -621,455 +700,3 @@ def setup_logger(log_dir, model_name, symbol, timeframe):
 
 
 # ─── Main Trading Loop ─────────────────────────────────────────────────
-def load_model(model_key, device="cpu"):
-    """Load a Kronos model and return (predictor, info)."""
-    from model import Kronos, KronosTokenizer, KronosPredictor
-
-    info = AVAILABLE_MODELS[model_key]
-    ctx = info["context_length"]
-
-    logger.info(f"Chargement tokenizer: {info.get('tokenizer_id', info.get('tokenizer_path'))}")
-    if "tokenizer_id" in info:
-        tokenizer = KronosTokenizer.from_pretrained(info["tokenizer_id"])
-    else:
-        tokenizer = KronosTokenizer.from_pretrained(info["tokenizer_path"])
-
-    logger.info(f"Chargement modèle: {info.get('model_id', info.get('model_path'))}")
-    if "model_id" in info:
-        model = Kronos.from_pretrained(info["model_id"])
-    else:
-        model = Kronos.from_pretrained(info["model_path"])
-
-    predictor = KronosPredictor(model, tokenizer, max_context=ctx)
-    logger.info(f"Modèle chargé: {model_key} ({info['params']} params, ctx={ctx})")
-
-    return predictor, info
-
-
-def run_trading_loop(args):
-    """Main autonomous trading loop."""
-    global logger
-
-    # Setup
-    model_key = args.model
-    symbol = args.symbol
-    timeframe = args.timeframe
-    capital = args.capital
-    lookback = args.lookback or PRESETS.get(timeframe, {}).get("lookback", 120)
-    pred_len = args.pred_len or PRESETS.get(timeframe, {}).get("pred_len", 30)
-    max_iterations = args.max_iterations or 0  # 0 = infinite
-
-    log_dir = args.log_dir or os.path.join(os.path.dirname(__file__), "logs")
-    logger, log_file = setup_logger(log_dir, model_key, symbol, timeframe)
-
-    logger.info("=" * 60)
-    logger.info("KRONOS CLI — Mode Autonome")
-    logger.info("=" * 60)
-    logger.info(f"Modèle:    {model_key} ({AVAILABLE_MODELS[model_key]['description']})")
-    logger.info(f"Symbole:   {symbol}")
-    logger.info(f"Timeframe: {timeframe}")
-    logger.info(f"Capital:   ${capital:,.2f} (paper trading)")
-    logger.info(f"Lookback:  {lookback} bougies")
-    logger.info(f"Pred_len:  {pred_len}")
-    logger.info(f"Log file:  {log_file}")
-    logger.info("=" * 60)
-
-    # Load model
-    t0 = time.time()
-    predictor, model_info = load_model(model_key, args.device)
-    load_time = time.time() - t0
-    logger.info(f"Modèle chargé en {load_time:.1f}s")
-
-    # Initialize paper trading engine
-    engine = PaperEngine(capital=capital, risk_pct=args.risk_pct)
-
-    # Initialize Polymarket mock
-    polymarket = PolymarketLiveTracker()
-
-    # Initialize data feed
-    feed = BinancePublicFeed()
-
-    # Get preset
-    preset = PRESETS.get(timeframe, PRESETS["M1"])
-    signal_threshold = args.signal_threshold or preset["signal_threshold"]
-    exit_threshold = args.exit_threshold or preset["exit_threshold"]
-    stop_loss_pct = args.stop_loss or preset["stop_loss_pct"]
-    take_profit_pct = args.take_profit or preset["take_profit_pct"]
-    max_hold_bars = preset.get("max_hold_bars", 120)
-
-    logger.info(f"Signal threshold: {signal_threshold}")
-    logger.info(f"Exit threshold:    {exit_threshold}")
-    logger.info(f"Stop loss:         {stop_loss_pct*100:.2f}%")
-    logger.info(f"Take profit:       {take_profit_pct*100:.2f}%")
-    logger.info(f"Max hold bars:     {max_hold_bars}")
-    logger.info("")
-
-    # Main loop
-    iteration = 0
-    tf_seconds = TF_SECONDS.get(timeframe, 60)
-    poll_interval = min(5.0, tf_seconds / 12.0)
-    last_bar_time = None
-
-    logger.info("🔄 Démarrage de la boucle de trading...")
-    logger.info(f"   Polling toutes les {poll_interval:.1f}s (tf={timeframe})")
-    logger.info("")
-
-    # ─── Results file for autonomous monitoring ───
-    results_dir = Path(log_dir)
-    results_file = results_dir / f"results_{model_key}_{symbol}_{timeframe}.json"
-
-    while True:
-        try:
-            iteration += 1
-            if max_iterations > 0 and iteration > max_iterations:
-                logger.info(f"Max iterations atteint ({max_iterations})")
-                break
-
-            # Wait for new bar
-            df, err = feed.get_klines(symbol, timeframe, limit=lookback + 20)
-            if err or df is None or len(df) < lookback:
-                logger.warning(f"Données insuffisantes: {err}, retry dans {poll_interval}s")
-                time.sleep(poll_interval)
-                continue
-
-            # Check if new bar
-            current_bar_time = df["timestamps"].iloc[-1]
-            if last_bar_time is not None and current_bar_time <= last_bar_time:
-                time.sleep(poll_interval)
-                continue
-
-            last_bar_time = current_bar_time
-            df = df.iloc[-lookback:].reset_index(drop=True)
-
-            # ─── Run prediction ───
-            x_df = df[["open", "high", "low", "close", "volume", "amount"]]
-            x_timestamp = df["timestamps"]
-            last_ts = x_timestamp.iloc[-1]
-            tf_delta = pd.Timedelta(seconds=tf_seconds)
-            y_timestamp = pd.Series([last_ts + tf_delta * (i + 1) for i in range(pred_len)])
-
-            t_start = time.time()
-            with torch.inference_mode():
-                pred_df = predictor.predict(
-                    df=x_df,
-                    x_timestamp=x_timestamp,
-                    y_timestamp=y_timestamp,
-                    pred_len=pred_len,
-                    T=1.0,
-                    top_p=0.9,
-                    sample_count=1,
-                )
-            pred_time = time.time() - t_start
-
-            current_close = float(df["close"].iloc[-1])
-            predicted_end_close = float(pred_df["close"].iloc[-1])
-            predicted_return = (predicted_end_close - current_close) / current_close
-
-            # ─── Signal generation ───
-            # Long/short logic
-            if predicted_return > signal_threshold:
-                signal = "long"
-            elif predicted_return < -signal_threshold:
-                signal = "short"
-            elif engine.position is not None:
-                pos_dir = engine.position["direction"]
-                if pos_dir == "long" and predicted_return < -exit_threshold:
-                    signal = "exit"
-                elif pos_dir == "short" and predicted_return > exit_threshold:
-                    signal = "exit"
-                else:
-                    signal = "neutral"
-            else:
-                signal = "neutral"
-
-            # ─── Polymarket mock ───
-            pm = polymarket.evaluate_prediction(symbol, current_close, predicted_end_close)
-
-            # ─── Log everything ───
-            logger.info(
-                f"[#{iteration}] {current_bar_time.strftime('%H:%M:%S')} | "
-                f"Close={current_close:.2f} | Pred={predicted_end_close:.2f} | "
-                f"Ret={predicted_return:.6f} ({predicted_return*100:.4f}%) | "
-                f"Signal={signal} | PredTime={pred_time:.2f}s | "
-                f"PM-{pm['direction']}"
-            )
-            # Log Polymarket bet details if we have a real market
-            if pm.get("polymarket_market") and pm["polymarket_market"] != "no matching market":
-                logger.info(
-                    f"  ↳ PM Bet 1€: {pm['polymarket_side']} @ {pm['polymarket_buy_price']:.3f} "
-                    f"on \"{pm['polymarket_market']}\" | "
-                    f"Profit potentiel: {pm['potential_profit_eur']:+.2f}€"
-                )
-
-            # ─── Execute signal ───
-            if signal == "exit" and engine.position is not None:
-                success, msg = engine.close_position(current_close, reason="signal_exit")
-                logger.info(f"  ↳ CLOSE: {msg}")
-
-            elif signal in ("long", "short") and engine.position is None:
-                success, msg = engine.open_position(signal, current_close, predicted_return)
-                logger.info(f"  ↳ OPEN: {msg}")
-
-            elif signal in ("long", "short") and engine.position is not None:
-                pos_dir = engine.position["direction"]
-                if (signal == "long" and pos_dir == "short") or (signal == "short" and pos_dir == "long"):
-                    success, msg = engine.close_position(current_close, reason="reverse")
-                    logger.info(f"  ↳ REVERSE CLOSE: {msg}")
-                    success, msg = engine.open_position(signal, current_close, predicted_return)
-                    logger.info(f"  ↳ REVERSE OPEN: {msg}")
-
-            # ─── Risk management ───
-            should_close, reason = engine.check_risk(
-                current_close, max_hold_bars, stop_loss_pct, take_profit_pct
-            )
-            if should_close:
-                success, msg = engine.close_position(current_close, reason=reason)
-                logger.info(f"  ↳ RISK CLOSE: {msg}")
-
-            # ─── Settle expired Polymarket bets (after 5 min) ───
-            settled = polymarket.settle_all_expired({symbol: current_close})
-            for s in settled:
-                emoji = "✅" if s["won"] else "❌"
-                logger.info(
-                    f"  ↳ PM SETTLED {emoji}: {s['side']} @ {s['buy_price']:.3f} "
-                    f"on \"{s['question'][:50]}\" | "
-                    f"PnL: {s['profit_eur']:+.2f}€"
-                )
-
-            # ─── Equity tracking ───
-            equity = engine.get_equity(current_close)
-            engine.equity_history.append({
-                "time": datetime.now().isoformat(),
-                "equity": round(equity, 2),
-                "capital": round(engine.capital, 2),
-            })
-
-            # ─── Periodic summary (every 30 iterations) ───
-            if iteration % 30 == 0:
-                summary = engine.get_summary()
-                pm_summary = polymarket.get_summary()
-                logger.info("-" * 60)
-                logger.info(f"📊 RÉSUMÉ (#{iteration})")
-                logger.info(f"   Capital: ${summary['current_capital']:.2f} "
-                          f"(PnL: ${summary['total_pnl']:.4f} = {summary['total_pnl_pct']:.4f}%)")
-                logger.info(f"   Trades: {summary['total_trades']} | "
-                          f"Win rate: {summary['win_rate']:.1f}%")
-                logger.info(f"   Polymarket: {pm_summary.get('accuracy', 0)}% accuracy "
-                          f"({pm_summary.get('wins', 0)}/{pm_summary.get('total_bets', 0)}) | "
-                          f"PnL: {pm_summary.get('total_pnl_eur', 0):+.2f}€ | "
-                          f"Misé: {pm_summary.get('total_wagered_eur', 0):.2f}€ | "
-                          f"ROI: {pm_summary.get('roi_pct', 0):.1f}%")
-                logger.info("-" * 60)
-
-            # ─── Save results to JSON ───
-            if iteration % 10 == 0:
-                results = {
-                    "model": model_key,
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "iteration": iteration,
-                    "timestamp": datetime.now().isoformat(),
-                    "summary": engine.get_summary(),
-                    "polymarket": polymarket.get_summary(),
-                    "last_signals": engine.signal_log[-20:],
-                    "trades": engine.trades[-50:],
-                    "equity_curve": engine.equity_history[-100:],
-                }
-                with open(str(results_file), "w") as f:
-                    json.dump(results, f, indent=2, default=str)
-
-            # Wait for next bar
-            time.sleep(poll_interval)
-
-        except KeyboardInterrupt:
-            logger.info("Interrupted by user")
-            break
-        except Exception as e:
-            logger.error(f"Erreur: {str(e)}\n{traceback.format_exc()}")
-            time.sleep(10)
-
-    # ─── Final summary ───
-    summary = engine.get_summary()
-    pm_summary = polymarket.get_summary()
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("📋 BILAN FINAL")
-    logger.info("=" * 60)
-    logger.info(f"Modèle:     {model_key} ({AVAILABLE_MODELS[model_key]['description']})")
-    logger.info(f"Symbole:    {symbol}")
-    logger.info(f"Timeframe:  {timeframe}")
-    logger.info(f"Itérations: {iteration}")
-    logger.info(f"Capital:    ${summary['current_capital']:.2f} "
-               f"(initial: ${summary['initial_capital']:.2f})")
-    logger.info(f"PnL total:  ${summary['total_pnl']:.4f} ({summary['total_pnl_pct']:.4f}%)")
-    logger.info(f"Trades:     {summary['total_trades']} | "
-               f"Win rate: {summary['win_rate']:.1f}%")
-    logger.info(f"Commissions: ${summary['total_commission']:.4f}")
-    logger.info(f"Polymarket: accuracy={pm_summary.get('accuracy', 0)}% "
-               f"({pm_summary.get('wins', 0)}/{pm_summary.get('total_bets', 0)}) | "
-               f"PnL: {pm_summary.get('total_pnl_eur', 0):+.2f}€ | "
-               f"Misé: {pm_summary.get('total_wagered_eur', 0):.2f}€ | "
-               f"ROI: {pm_summary.get('roi_pct', 0):.1f}%")
-    logger.info(f"Log file:   {log_file}")
-    logger.info("=" * 60)
-
-    # Save final results
-    final_results = {
-        "model": model_key,
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "iterations": iteration,
-        "timestamp": datetime.now().isoformat(),
-        "summary": summary,
-        "polymarket": pm_summary,
-        "all_trades": engine.trades,
-        "equity_curve": engine.equity_history,
-    }
-    final_file = results_dir / f"final_{model_key}_{symbol}_{timeframe}.json"
-    with open(str(final_file), "w") as f:
-        json.dump(final_results, f, indent=2, default=str)
-    logger.info(f"Résultats finaux sauvegardés: {final_file}")
-
-    return summary
-
-
-# ─── Benchmark Mode ─────────────────────────────────────────────────────
-def benchmark_models(symbols=None, timeframe="M1", capital=10000):
-    """Test all models on a single prediction and report timing."""
-    if symbols is None:
-        symbols = ["BTCUSDT"]
-
-    from model import Kronos, KronosTokenizer, KronosPredictor
-
-    feed = BinancePublicFeed()
-
-    print("\n" + "=" * 60)
-    print("🔬 KRONOS MODEL BENCHMARK")
-    print("=" * 60)
-
-    results = {}
-    for model_key in ["mini", "small", "base"]:
-        info = AVAILABLE_MODELS[model_key]
-        print(f"\n{'─' * 40}")
-        print(f"Modèle: {model_key} ({info['params']} params)")
-        print(f"{'─' * 40}")
-
-        # Load model
-        t0 = time.time()
-        if "tokenizer_id" in info:
-            tokenizer = KronosTokenizer.from_pretrained(info["tokenizer_id"])
-        else:
-            tokenizer = KronosTokenizer.from_pretrained(info["tokenizer_path"])
-
-        if "model_id" in info:
-            model = Kronos.from_pretrained(info["model_id"])
-        else:
-            model = Kronos.from_pretrained(info["model_path"])
-
-        predictor = KronosPredictor(model, tokenizer, max_context=info["context_length"])
-        load_time = time.time() - t0
-        print(f"  Chargement: {load_time:.1f}s")
-
-        for symbol in symbols:
-            # Get data
-            df, err = feed.get_klines(symbol, timeframe, limit=200)
-            if err:
-                print(f"  Erreur données {symbol}: {err}")
-                continue
-
-            lookback = min(120, len(df) - 1)
-            pred_len = 30
-
-            x_df = df.iloc[-lookback:][["open", "high", "low", "close", "volume", "amount"]].reset_index(drop=True)
-            x_timestamp = df.iloc[-lookback:]["timestamps"].reset_index(drop=True)
-            last_ts = x_timestamp.iloc[-1]
-            tf_delta = pd.Timedelta(seconds=TF_SECONDS[timeframe])
-            y_timestamp = pd.Series([last_ts + tf_delta * (i + 1) for i in range(pred_len)])
-
-            # Run 3 predictions for average timing
-            times = []
-            for i in range(3):
-                t0 = time.time()
-                with torch.inference_mode():
-                    pred_df = predictor.predict(
-                        df=x_df,
-                        x_timestamp=x_timestamp,
-                        y_timestamp=y_timestamp,
-                        pred_len=pred_len,
-                        T=1.0, top_p=0.9, sample_count=1,
-                    )
-                times.append(time.time() - t0)
-
-            current_close = float(df["close"].iloc[-1])
-            pred_close = float(pred_df["close"].iloc[-1])
-            pred_return = (pred_close - current_close) / current_close
-
-            avg_time = sum(times) / len(times)
-            print(f"  {symbol}: close={current_close:.2f}, pred={pred_close:.2f}, "
-                  f"ret={pred_return*100:.4f}%, avg_pred_time={avg_time:.3f}s")
-
-            results[f"{model_key}_{symbol}"] = {
-                "model": model_key,
-                "symbol": symbol,
-                "load_time": round(load_time, 1),
-                "pred_time_avg": round(avg_time, 3),
-                "current_close": current_close,
-                "predicted_close": round(pred_close, 2),
-                "predicted_return": round(pred_return * 100, 4),
-            }
-
-    print("\n" + "=" * 60)
-    print("📊 RÉSUMÉ BENCHMARK")
-    print("=" * 60)
-    print(f"{'Modèle':<12} {'Symbole':<10} {'Load':>8} {'Pred':>8} {'Ret%':>10}")
-    print("-" * 50)
-    for key, r in results.items():
-        print(f"{r['model']:<12} {r['symbol']:<10} {r['load_time']:>7.1f}s {r['pred_time_avg']:>7.3f}s {r['predicted_return']:>9.4f}%")
-
-    return results
-
-
-# ─── Main ──────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Kronos CLI — Mode Autonome")
-    parser.add_argument("--model", type=str, default="small",
-                       choices=list(AVAILABLE_MODELS.keys()),
-                       help="Model to use (mini, small, base, xaumodel-local, xaumodel-mini)")
-    parser.add_argument("--symbol", type=str, default="BTCUSDT",
-                       help="Trading symbol (BTCUSDT, ETHUSDT, etc.)")
-    parser.add_argument("--timeframe", type=str, default="M1",
-                       choices=list(TF_SECONDS.keys()),
-                       help="Timeframe (M1, M5, M15, etc.)")
-    parser.add_argument("--capital", type=float, default=10000.0,
-                       help="Initial capital for paper trading")
-    parser.add_argument("--risk-pct", type=float, default=0.01,
-                       help="Risk per trade as fraction of capital (default: 0.01 = 1%%)")
-    parser.add_argument("--lookback", type=int, default=None,
-                       help="Lookback window (default: from preset)")
-    parser.add_argument("--pred-len", type=int, default=None,
-                       help="Prediction length (default: from preset)")
-    parser.add_argument("--signal-threshold", type=float, default=None,
-                       help="Signal threshold (default: from preset)")
-    parser.add_argument("--exit-threshold", type=float, default=None,
-                       help="Exit threshold (default: from preset)")
-    parser.add_argument("--stop-loss", type=float, default=None,
-                       help="Stop loss percentage (default: from preset)")
-    parser.add_argument("--take-profit", type=float, default=None,
-                       help="Take profit percentage (default: from preset)")
-    parser.add_argument("--max-iterations", type=int, default=0,
-                       help="Max iterations (0 = infinite)")
-    parser.add_argument("--device", type=str, default="cpu",
-                       help="Device (cpu or cuda)")
-    parser.add_argument("--log-dir", type=str, default=None,
-                       help="Log directory")
-    parser.add_argument("--paper", action="store_true", default=True,
-                       help="Paper trading mode (default)")
-    parser.add_argument("--benchmark", action="store_true",
-                       help="Run benchmark on all models instead of trading")
-
-    args = parser.parse_args()
-
-    if args.benchmark:
-        benchmark_models(symbols=["BTCUSDT", "ETHUSDT"], timeframe=args.timeframe)
-    else:
-        run_trading_loop(args)
