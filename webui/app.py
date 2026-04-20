@@ -7,11 +7,12 @@ import json
 import torch
 import plotly.graph_objects as go
 import plotly.utils
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 from flask_cors import CORS
 import sys
 import warnings
 import datetime
+import time
 warnings.filterwarnings('ignore')
 
 # Add project root directory to path
@@ -37,6 +38,15 @@ try:
 except Exception as e:
     LIVE_AVAILABLE = False
     print(f"Warning: Live trading not available: {e}")
+
+try:
+    from polymarket_engine import PolymarketSessionManager
+    POLYMARKET_AVAILABLE = True
+except Exception as e:
+    POLYMARKET_AVAILABLE = False
+    print(f"Warning: Polymarket engine not available: {e}")
+
+polymarket_manager = PolymarketSessionManager() if POLYMARKET_AVAILABLE else None
 
 app = Flask(__name__)
 CORS(app)
@@ -1232,6 +1242,144 @@ def live_sessions_archive():
 
     sessions = read_log_file(str(summary_path), limit=500)
     return jsonify({'sessions': list(reversed(sessions))})
+
+
+# ======================================================================
+# Polymarket 5-Min Paper Trading Routes
+# ======================================================================
+
+@app.route('/polymarket')
+def polymarket_page():
+    return render_template('polymarket.html')
+
+
+@app.route('/api/polymarket/available-models')
+def polymarket_models():
+    from live_cli import AVAILABLE_MODELS as PM_MODELS
+    models = {}
+    for k, v in PM_MODELS.items():
+        models[k] = {
+            "params": v.get("params", "?"),
+            "description": v.get("description", k),
+            "context_length": v.get("context_length", 512),
+        }
+    return jsonify({"models": models, "available": POLYMARKET_AVAILABLE})
+
+
+@app.route('/api/polymarket/start', methods=['POST'])
+def polymarket_start():
+    if not POLYMARKET_AVAILABLE or polymarket_manager is None:
+        return jsonify({'error': 'Polymarket engine not available'}), 400
+
+    data = request.get_json() or {}
+    config = {
+        "symbol": data.get("symbol", "BTCUSDT"),
+        "model_key": data.get("model_key", "small"),
+        "timeframe": data.get("timeframe", "M5"),
+        "bet_amount": float(data.get("bet_amount", 1.0)),
+        "samples": int(data.get("samples", 5)),
+        "device": data.get("device", None),
+    }
+
+    session_id = polymarket_manager.create_and_start(config)
+    return jsonify({"success": True, "session_id": session_id})
+
+
+@app.route('/api/polymarket/stop', methods=['POST'])
+def polymarket_stop():
+    if not POLYMARKET_AVAILABLE or polymarket_manager is None:
+        return jsonify({'error': 'Polymarket engine not available'}), 400
+
+    data = request.get_json() or {}
+    session_id = data.get("session_id")
+    if not session_id:
+        return jsonify({'error': 'session_id required'}), 400
+
+    polymarket_manager.stop(session_id)
+    return jsonify({"success": True})
+
+
+@app.route('/api/polymarket/status')
+def polymarket_status():
+    if not POLYMARKET_AVAILABLE or polymarket_manager is None:
+        return jsonify({'sessions': {}, 'available': False})
+
+    session_id = request.args.get('session_id')
+    if session_id:
+        state = polymarket_manager.get_state(session_id)
+        if not state:
+            return jsonify({'error': 'Session not found'}), 404
+        return jsonify(state)
+
+    return jsonify({"sessions": polymarket_manager.get_all_states(), "available": True})
+
+
+@app.route('/api/polymarket/stream')
+def polymarket_stream():
+    """SSE endpoint for real-time log streaming."""
+    if not POLYMARKET_AVAILABLE or polymarket_manager is None:
+        def error_gen():
+            yield f"data: {json.dumps({'error': 'not available'})}\n\n"
+        return Response(error_gen(), mimetype='text/event-stream')
+
+    session_id = request.args.get('session_id')
+    if not session_id:
+        return Response("data: {\"error\": \"session_id required\"}\n\n", mimetype='text/event-stream')
+
+    session = polymarket_manager.get_session(session_id)
+    if not session:
+        return Response("data: {\"error\": \"session not found\"}\n\n", mimetype='text/event-stream')
+
+    def event_generator():
+        last_index = 0
+        last_state_tick = 0
+        while True:
+            # New log entries
+            new_logs = session.get_new_logs(last_index)
+            if new_logs:
+                last_index += len(new_logs)
+                for log in new_logs:
+                    yield f"data: {json.dumps({'type': 'log', 'data': log})}\n\n"
+
+            # Periodic state snapshot (every 2s)
+            now = time.time()
+            if now - last_state_tick > 2:
+                last_state_tick = now
+                state = session.get_state()
+                yield f"data: {json.dumps({'type': 'state', 'data': state})}\n\n"
+
+                # Stop SSE if session ended
+                if state['status'] in ('stopped', 'error'):
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    break
+
+            time.sleep(0.3)
+
+    return Response(
+        event_generator(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        }
+    )
+
+
+@app.route('/api/polymarket/history')
+def polymarket_history():
+    """Get full session state including all settled bets."""
+    if not POLYMARKET_AVAILABLE or polymarket_manager is None:
+        return jsonify({'error': 'not available'}), 400
+
+    session_id = request.args.get('session_id')
+    if not session_id:
+        return jsonify({'error': 'session_id required'}), 400
+
+    state = polymarket_manager.get_state(session_id)
+    if not state:
+        return jsonify({'error': 'Session not found'}), 404
+
+    return jsonify(state)
 
 
 if __name__ == '__main__':

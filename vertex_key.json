@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "double-insight-490718-m0",
+  "private_key_id": "2a6096f74399d021788453578f685dbd9be8198d",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCsL8Q3Cy9EaAzt\nv61NhAhK/aT5+Ai1JPTwpUlZaggJIeQdNyS7t5NGv2JGLoDmWiKKMfVh09vqz6fr\nRIltrXRUE8E57/b+FYMEOpd4vuHPHMTg8JpmsaIQjRgX1yzMUhA+BCyOjSpb6SEQ\nkkO6fd609PgyR9P4WbYgdamEACh4/4TSMuVhA1azanpEsCkAKvqvUAmr+qmP3bxX\ninbNvVwdQm1Vogt/jsO8hDLB+6quuBrk07S25jFbt5kMZCwtGDz86+gG3NPoa5N5\n5E6LufdBNIxpn1WGwfdJj+IaknATSlhFUPBGF22A7D8DXuZxIbntau0I9729lR7b\nO1nmQ9ZzAgMBAAECggEAP/RF9wPqfIgBNVVac041HlVzr3zXDyE48SETS2i8r1et\nOMTAmhCnXUG8qMChE+4qohXIRJvCNUcH4bTFLr2cVZY40OI2ZU1sKmfw1uJfUOQo\npDv5vWcBARDHACPl+cYJTl+ShSgdsaG3rEYHbf9Odvv+K/7N1pLLuOa7HdJJNhdm\nGTME1wEOnBCpFk9hde6dIdfvl/6S3SloCY6Boa8Thdazlvv5ILXlKI1PyycSbWRq\njIXHWkJlY82qRCc5TsyhSgVrxWKjxUfL2SfFLQb/x5BgO/L6QFxrVGxv77Ah38Ct\nh4AoHH7x1aVRwN4EBQd18YelmrEcglPdtTLuV7rioQKBgQDZV1gunoiJx/q+9gRi\n1rbHxWdVDIYnaaDLAyL/VmwN6I/p3KtqOjV7EoVjHyUVnU4gLY74DxGpiGtzgB7W\nnYFiPo86X+xy8v+LYJrZkpXzDXgMQkAMA1DU0ekSVVyO4JDy+EcnOiUDlJlTutpw\n78etcr63RwqW6iAZY4uWoHuOawKBgQDK0E1YvT5P15E/Qw42uFA4YKyue1ax2zq4\nt9hnlW4mocvYEq57yCVf0T020nL+Gt7HksWRrvv45mKGk+6z1VD62uWsIROpNb9Q\nFjhVA8gneDL2x6gVFWh41/ImctI0vq0OeOrpfqHPPF2cR3J3SDrd4RxUBXUvNAob\nb7qpuxhKGQKBgENq1Z64bHAYyU388EVchxwWvsPh+6c0G719fpinzSLPVfzcB4wO\n/FHt39Rsb8txnS9cEnId8oOdHn+YaXh3KRA5iaI46RaLC/vG/qGo17yqG+fpkQZo\n7OTnLB4Uvn5PaIcFvsSLQ7oFmT4gwuuvZUgHROODNOS1QTm+6CjUJR97AoGBAJEB\nd5uvyoJ5ZO7vOZVkGG8Gp9AkfSqyzPxO7dm5nETgv4bgbIIx6o7kYjj1JKSLf6b/\nSGTN0Hf3+I+x6yQGq1x/72AvUghUVlGjYWlfR9b4eK+6tnFEmip0czyMMcDmZ4MG\nbya8lGJADcnzx2KDcRs8nO1x7YPvWB6ftr0t+MLZAoGATWiu8WiNVrWdMQgr4ySr\n8JNr5bl15q7px8LdKzoKQ4wMHrWnmCwXHCNCEIrJGpw+M/Rft9hiRz+GWysxuM+x\nx0DAsAosc5RnCjF3gbcGAEZVHxBvygkMYODP2RUheJyJi6XuQhtHgp8kw/2ubM7T\naUMyjuu6so/BVnJPVLh2AWU=\n-----END PRIVATE KEY-----\n",
+  "client_email": "comfyui-vertex@double-insight-490718-m0.iam.gserviceaccount.com",
+  "client_id": "110314270049808757089",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/comfyui-vertex%40double-insight-490718-m0.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

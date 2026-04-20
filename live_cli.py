@@ -699,4 +699,261 @@ def setup_logger(log_dir, model_name, symbol, timeframe):
     return logger, str(log_file)
 
 
-# ─── Main Trading Loop ─────────────────────────────────────────────────
+def load_kronos(model_key, device=None):
+    """Load Kronos model + tokenizer from registry."""
+    from model import Kronos, KronosTokenizer, KronosPredictor
+
+    cfg = AVAILABLE_MODELS[model_key]
+
+    if "model_id" in cfg:
+        tokenizer = KronosTokenizer.from_pretrained(cfg["tokenizer_id"])
+        model = Kronos.from_pretrained(cfg["model_id"])
+    else:
+        tokenizer = KronosTokenizer.from_pretrained(cfg["tokenizer_path"])
+        model = Kronos.from_pretrained(cfg["model_path"])
+
+    predictor = KronosPredictor(model, tokenizer, max_context=cfg["context_length"], device=device)
+    return predictor
+
+
+def predict_direction(predictor, df, lookback, pred_len, timeframe_secs, sample_count=5):
+    """
+    Run Kronos prediction and return (direction, current_price, predicted_price, pred_df).
+
+    direction: "UP", "DOWN", or "FLAT"
+    """
+    if len(df) < lookback:
+        return None, None, None, None
+
+    x_df = df.iloc[-lookback:][["open", "high", "low", "close", "volume", "amount"]].copy()
+    x_timestamp = df.iloc[-lookback:]["timestamps"]
+
+    future_times = pd.date_range(
+        start=x_timestamp.iloc[-1] + pd.Timedelta(seconds=timeframe_secs),
+        periods=pred_len,
+        freq=pd.Timedelta(seconds=timeframe_secs),
+    )
+
+    try:
+        pred_df = predictor.predict(
+            df=x_df,
+            x_timestamp=x_timestamp,
+            y_timestamp=future_times,
+            pred_len=pred_len,
+            T=1.0,
+            top_p=0.9,
+            sample_count=sample_count,
+            verbose=False,
+        )
+    except Exception:
+        return None, None, None, None
+
+    current_close = x_df["close"].iloc[-1]
+    predicted_close = pred_df["close"].iloc[-1]
+
+    predicted_return = (predicted_close - current_close) / current_close
+
+    if predicted_return > 0.0003:
+        direction = "UP"
+    elif predicted_return < -0.0003:
+        direction = "DOWN"
+    else:
+        direction = "FLAT"
+
+    return direction, current_close, predicted_close, pred_df
+
+
+def seconds_to_next_window():
+    """Seconds until the next 5-min boundary (Polymarket window start)."""
+    now = datetime.now(timezone.utc)
+    ts = now.timestamp()
+    next_boundary = (int(ts) // 300 + 1) * 300
+    return next_boundary - ts
+
+
+def run_polymarket_loop(args):
+    """Main Polymarket 5-min paper trading loop."""
+    logger, log_file = setup_logger(
+        args.log_dir, args.model, args.symbol, args.timeframe
+    )
+
+    logger.info("=" * 70)
+    logger.info("KRONOS POLYMARKET 5-MIN PAPER TRADER")
+    logger.info("=" * 70)
+    logger.info(f"Model:     {args.model} ({AVAILABLE_MODELS[args.model]['params']})")
+    logger.info(f"Symbol:    {args.symbol}")
+    logger.info(f"Timeframe: {args.timeframe}")
+    logger.info(f"Bet size:  {args.bet_amount}€")
+    logger.info(f"Log file:  {log_file}")
+    logger.info("=" * 70)
+
+    # Load model
+    logger.info("Loading Kronos model...")
+    predictor = load_kronos(args.model, device=args.device)
+    logger.info("Model loaded.")
+
+    # Init feed + tracker
+    feed = BinancePublicFeed()
+    pm_tracker = Polymarket5MinTracker(bet_amount=args.bet_amount)
+
+    # Load presets
+    tf_secs = TF_SECONDS[args.timeframe]
+    preset = PRESETS.get(args.timeframe, PRESETS["M5"])
+    lookback = preset["lookback"]
+    pred_len = preset["pred_len"]
+
+    logger.info(f"Lookback: {lookback} bars | Pred len: {pred_len} | Sample count: {args.samples}")
+
+    # Fetch initial data
+    logger.info("Fetching initial market data...")
+    df, err = feed.get_klines(args.symbol, args.timeframe, limit=500)
+    if err:
+        logger.error(f"Failed to fetch data: {err}")
+        return
+    logger.info(f"Got {len(df)} candles. Last close: {df['close'].iloc[-1]:.2f}")
+
+    last_bar_time = df["timestamps"].iloc[-1]
+    cycle = 0
+
+    # ─── Main Loop ────────────────────────────────────────────────────
+    logger.info("Starting trading loop. Ctrl+C to stop.")
+    logger.info("")
+
+    try:
+        while True:
+            cycle += 1
+
+            # 1) Settle expired bets (compare real Binance prices)
+            current_price = feed.get_price(args.symbol)
+            if current_price:
+                settled = pm_tracker.settle_all_expired({args.symbol: current_price})
+                for r in settled:
+                    icon = "+" if r["won"] else "-"
+                    logger.info(
+                        f"  SETTLED | {icon} {r['side']:4s} | "
+                        f"€{r['profit_eur']:+.2f} | "
+                        f"Entry {r['entry_price']:.2f} -> Exit {r['exit_price']:.2f} | "
+                        f"Actual: {r['actual_direction']}"
+                    )
+
+            # 2) Wait until ~15s before next 5-min window
+            secs_to_window = seconds_to_next_window()
+            if secs_to_window > 20:
+                wait_secs = secs_to_window - 15
+                next_window = datetime.now(timezone.utc) + timedelta(seconds=wait_secs + 15)
+                logger.info(
+                    f"[Cycle {cycle}] Waiting {wait_secs:.0f}s for next window "
+                    f"(starts at {next_window.strftime('%H:%M:%S')} UTC)..."
+                )
+                time.sleep(wait_secs)
+
+            # 3) Fetch fresh data right before the window
+            df, err = feed.get_klines(args.symbol, args.timeframe, limit=500)
+            if err:
+                logger.warning(f"Data fetch failed: {err} — skipping cycle")
+                time.sleep(60)
+                continue
+
+            current_price = df["close"].iloc[-1]
+            logger.info(f"[Cycle {cycle}] Price: {current_price:.2f} | Candles: {len(df)}")
+
+            # 4) Run Kronos prediction
+            direction, cur_price, pred_price, pred_df = predict_direction(
+                predictor, df, lookback, pred_len, tf_secs, sample_count=args.samples
+            )
+
+            if direction is None:
+                logger.warning("Prediction failed — skipping")
+                time.sleep(60)
+                continue
+
+            pred_return = (pred_price - cur_price) / cur_price if cur_price else 0
+            logger.info(
+                f"  KRONOS | {direction:4s} | "
+                f"Predicted: {pred_price:.2f} | "
+                f"Return: {pred_return*100:+.4f}%"
+            )
+
+            # 5) Place Polymarket bet (if not FLAT)
+            if direction == "FLAT":
+                logger.info("  -> No bet (prediction too flat)")
+            else:
+                result = pm_tracker.place_bet(args.symbol, direction, cur_price, pred_price)
+                if result.get("position"):
+                    logger.info(
+                        f"  -> BET {result['polymarket_side']:4s} | "
+                        f"Buy @ {result['polymarket_buy_price']:.4f} | "
+                        f"Profit potentiel: {result['potential_profit_eur']:+.2f}€ | "
+                        f"Window: {result['window_start']}-{result['window_end']} UTC"
+                    )
+                else:
+                    logger.info(f"  -> No bet: {result.get('market', 'unknown')}")
+
+            # 6) Print summary every 10 cycles
+            if cycle % 10 == 0:
+                s = pm_tracker.get_summary()
+                logger.info(
+                    f"  SUMMARY | Bets: {s['total_bets']} | "
+                    f"Wins: {s['wins']} | "
+                    f"Accuracy: {s['accuracy']:.1f}% | "
+                    f"P&L: {s['total_pnl_eur']:+.2f}€ | "
+                    f"ROI: {s['roi_pct']:+.1f}%"
+                )
+
+            # 7) Wait for the window to start + a small buffer
+            secs_to_window = seconds_to_next_window()
+            if secs_to_window > 0:
+                time.sleep(secs_to_window + 2)
+
+    except KeyboardInterrupt:
+        logger.info("")
+        logger.info("Stopped by user.")
+
+    # ─── Final Report ─────────────────────────────────────────────────
+    s = pm_tracker.get_summary()
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("FINAL REPORT — Polymarket 5-Min Paper Trading")
+    logger.info("=" * 70)
+    logger.info(f"  Total bets:     {s['total_bets']}")
+    logger.info(f"  Wins:           {s['wins']}")
+    logger.info(f"  Accuracy:       {s['accuracy']:.1f}%")
+    logger.info(f"  Open bets:      {s['open_bets']}")
+    logger.info(f"  Total wagered:  {s['total_wagered_eur']:.2f}€")
+    logger.info(f"  Total P&L:      {s['total_pnl_eur']:+.2f}€")
+    logger.info(f"  ROI:            {s['roi_pct']:+.1f}%")
+    logger.info("=" * 70)
+
+    # Save results to JSON
+    results_file = Path(args.log_dir) / f"pm_results_{args.symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(results_file, "w") as f:
+        json.dump({
+            "summary": s,
+            "settled_bets": pm_tracker.results,
+            "open_bets": [p for p in pm_tracker.positions],
+        }, f, indent=2, default=str)
+    logger.info(f"Results saved to {results_file}")
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Kronos Polymarket 5-Min Paper Trader")
+    p.add_argument("--model", choices=list(AVAILABLE_MODELS.keys()), default="small",
+                   help="Kronos model to use (default: small)")
+    p.add_argument("--symbol", default="BTCUSDT",
+                   help="Trading pair (default: BTCUSDT)")
+    p.add_argument("--timeframe", choices=["M1", "M5"], default="M5",
+                   help="Candle timeframe (default: M5 — matches Polymarket 5-min windows)")
+    p.add_argument("--bet-amount", type=float, default=1.0,
+                   help="Bet amount in EUR per Polymarket bet (default: 1.0)")
+    p.add_argument("--samples", type=int, default=5,
+                   help="Number of Kronos samples to average (default: 5)")
+    p.add_argument("--device", default=None,
+                   help="Torch device (default: auto)")
+    p.add_argument("--log-dir", default="./logs",
+                   help="Directory for log files (default: ./logs)")
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    run_polymarket_loop(args)
