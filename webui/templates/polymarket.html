@@ -13,7 +13,6 @@
             color: #c9d1d9;
             min-height: 100vh;
         }
-
         nav {
             background: linear-gradient(135deg, #0f172a 0%, #1a1f36 100%);
             padding: 12px 24px;
@@ -23,140 +22,104 @@
             border-bottom: 1px solid #1e293b;
         }
         nav .brand {
-            font-weight: 800;
-            font-size: 1.1rem;
+            font-weight: 800; font-size: 1.1rem;
             background: linear-gradient(135deg, #38bdf8, #818cf8);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         }
-        nav a {
-            color: #64748b;
-            text-decoration: none;
-            font-size: 0.85rem;
-            transition: color 0.2s;
-        }
+        nav a { color: #64748b; text-decoration: none; font-size: 0.85rem; transition: color 0.2s; }
         nav a:hover, nav a.active { color: #38bdf8; font-weight: 600; }
         nav .sep { width: 1px; height: 20px; background: #1e293b; }
-        .session-indicator {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-left: auto;
-        }
-        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
-        .dot-running { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
-        .dot-stopped { background: #64748b; }
-        .dot-error { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+        .global-stats { margin-left: auto; display: flex; gap: 16px; align-items: center; font-size: 0.78rem; }
+        .global-stats .gs-item { display: flex; gap: 4px; align-items: center; }
+        .gs-label { color: #64748b; }
+        .gs-value { font-weight: 700; }
 
-        .dashboard {
-            max-width: 1600px;
-            margin: 0 auto;
-            padding: 16px;
-            display: grid;
-            grid-template-columns: 320px 1fr;
-            grid-template-rows: auto 1fr auto;
-            gap: 16px;
-        }
+        .dashboard { max-width: 1600px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
 
+        /* ── Control Panel ── */
         .control-panel {
-            grid-column: 1 / -1;
             background: linear-gradient(135deg, #111827, #1e293b);
-            border-radius: 12px;
-            padding: 16px 20px;
-            border: 1px solid #1e293b;
-            display: flex;
-            gap: 16px;
-            align-items: flex-end;
-            flex-wrap: wrap;
+            border-radius: 12px; padding: 16px 20px; border: 1px solid #1e293b;
+            display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap;
         }
         .ctrl-group { display: flex; flex-direction: column; gap: 4px; }
         .ctrl-group label { font-size: 0.72rem; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
         .ctrl-group select, .ctrl-group input {
-            padding: 8px 12px;
-            border: 1px solid #1e293b;
-            border-radius: 8px;
-            font-size: 0.85rem;
-            background: #0f172a;
-            color: #e2e8f0;
-            min-width: 120px;
+            padding: 8px 12px; border: 1px solid #1e293b; border-radius: 8px;
+            font-size: 0.85rem; background: #0f172a; color: #e2e8f0; min-width: 120px;
         }
         .ctrl-group select:focus, .ctrl-group input:focus { border-color: #38bdf8; outline: none; }
         .btn-action {
-            padding: 9px 24px;
-            border: none;
-            border-radius: 8px;
-            font-size: 0.88rem;
-            font-weight: 700;
-            cursor: pointer;
-            transition: all 0.2s;
+            padding: 9px 24px; border: none; border-radius: 8px;
+            font-size: 0.88rem; font-weight: 700; cursor: pointer; transition: all 0.2s;
         }
         .btn-go { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
-        .btn-halt { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }
         .btn-action:hover { transform: translateY(-1px); filter: brightness(1.1); }
         .btn-action:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
-        .sidebar { display: flex; flex-direction: column; gap: 12px; }
-        .stat-card {
+        /* ── Session Cards Row ── */
+        .sessions-row {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px;
+        }
+        .session-card {
             background: linear-gradient(135deg, #111827, #1e293b);
-            border-radius: 10px;
-            padding: 14px;
-            border: 1px solid #1e293b;
+            border-radius: 10px; padding: 14px; border: 1px solid #1e293b;
+            cursor: pointer; transition: border-color 0.2s;
+            position: relative;
         }
-        .stat-card .stat-label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-        .stat-card .stat-value { font-size: 1.5rem; font-weight: 800; }
-        .stat-card .stat-sub { font-size: 0.75rem; color: #64748b; margin-top: 2px; }
-        .positive { color: #4ade80; }
-        .negative { color: #f87171; }
-        .neutral { color: #94a3b8; }
-        .accent { color: #38bdf8; }
-
-        .pred-badge {
-            display: inline-block;
-            padding: 6px 16px;
-            border-radius: 8px;
-            font-size: 1.1rem;
-            font-weight: 800;
-            text-transform: uppercase;
+        .session-card.selected { border-color: #38bdf8; }
+        .session-card.running { border-left: 3px solid #22c55e; }
+        .session-card.stopped { border-left: 3px solid #64748b; }
+        .session-card.error { border-left: 3px solid #ef4444; }
+        .sc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .sc-title { font-weight: 700; font-size: 0.95rem; }
+        .sc-status { padding: 2px 8px; border-radius: 10px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; }
+        .sc-status-running { background: #166534; color: #86efac; }
+        .sc-status-stopped { background: #374151; color: #9ca3af; }
+        .sc-status-error { background: #7f1d1d; color: #fca5a5; }
+        .sc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 0.78rem; }
+        .sc-label { color: #64748b; }
+        .sc-val { color: #e2e8f0; font-weight: 600; text-align: right; }
+        .sc-val.pos { color: #4ade80; }
+        .sc-val.neg { color: #f87171; }
+        .sc-pred { margin-top: 6px; text-align: center; }
+        .sc-stop {
+            position: absolute; top: 10px; right: 10px; background: none; border: none;
+            color: #64748b; font-size: 1.1rem; cursor: pointer; padding: 2px 6px;
         }
-        .pred-up { background: #166534; color: #86efac; }
-        .pred-down { background: #7f1d1d; color: #fca5a5; }
-        .pred-flat { background: #374151; color: #9ca3af; }
+        .sc-stop:hover { color: #ef4444; }
+        .empty-sessions { text-align: center; padding: 30px; color: #475569; font-size: 0.9rem; }
 
-        .main-area { display: flex; flex-direction: column; gap: 12px; }
+        /* ── Detail Area (selected session) ── */
+        .detail-area {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+        }
+        .detail-left { display: flex; flex-direction: column; gap: 12px; }
+        .detail-right { display: flex; flex-direction: column; gap: 12px; }
 
         .chart-panel {
             background: linear-gradient(135deg, #111827, #1e293b);
-            border-radius: 10px;
-            padding: 14px;
-            border: 1px solid #1e293b;
+            border-radius: 10px; padding: 14px; border: 1px solid #1e293b;
         }
         .panel-title { font-size: 0.8rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
 
         .log-panel {
             background: linear-gradient(135deg, #111827, #1e293b);
-            border-radius: 10px;
-            padding: 14px;
-            border: 1px solid #1e293b;
-            flex: 1;
-            min-height: 200px;
-            max-height: 350px;
-            overflow-y: auto;
+            border-radius: 10px; padding: 14px; border: 1px solid #1e293b;
+            min-height: 200px; max-height: 400px; overflow-y: auto; flex: 1;
         }
         .log-panel .panel-title {
-            position: sticky;
-            top: 0;
-            background: #111827;
-            padding: 4px 0;
-            z-index: 1;
+            position: sticky; top: 0; background: #111827; padding: 4px 0; z-index: 1;
+            display: flex; justify-content: space-between; align-items: center;
         }
+        .log-filter { font-size: 0.72rem; padding: 2px 8px; border: 1px solid #1e293b; border-radius: 4px; background: #0f172a; color: #94a3b8; }
         .log-line {
             font-family: 'Cascadia Code', 'Fira Code', monospace;
-            font-size: 0.76rem;
-            padding: 2px 0;
-            line-height: 1.4;
+            font-size: 0.76rem; padding: 2px 0; line-height: 1.4;
             border-bottom: 1px solid rgba(30,41,59,0.5);
         }
         .log-time { color: #475569; }
+        .log-sid { color: #818cf8; font-weight: 600; font-size: 0.68rem; }
         .log-info { color: #94a3b8; }
         .log-warning { color: #fbbf24; }
         .log-error { color: #f87171; }
@@ -166,12 +129,11 @@
         .log-settled-lost { color: #f87171; font-weight: 700; }
         .log-bet { color: #38bdf8; font-weight: 600; }
 
+        /* ── Bets Table ── */
         .bets-panel {
             grid-column: 1 / -1;
             background: linear-gradient(135deg, #111827, #1e293b);
-            border-radius: 10px;
-            padding: 14px;
-            border: 1px solid #1e293b;
+            border-radius: 10px; padding: 14px; border: 1px solid #1e293b;
         }
         .bets-table { width: 100%; font-size: 0.78rem; border-collapse: collapse; }
         .bets-table th {
@@ -187,11 +149,18 @@
         .badge-open { background: #1e3a5f; color: #93c5fd; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; }
         .badge-won { background: #166534; color: #86efac; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; }
         .badge-lost { background: #7f1d1d; color: #fca5a5; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; }
-        .empty-state { text-align: center; padding: 40px; color: #475569; }
-        .empty-state .icon { font-size: 2.5rem; margin-bottom: 8px; }
+        .pred-badge { display: inline-block; padding: 4px 12px; border-radius: 6px; font-size: 0.95rem; font-weight: 800; text-transform: uppercase; }
+        .pred-up { background: #166534; color: #86efac; }
+        .pred-down { background: #7f1d1d; color: #fca5a5; }
+        .pred-flat { background: #374151; color: #9ca3af; }
+        .positive { color: #4ade80; }
+        .negative { color: #f87171; }
+        .neutral { color: #94a3b8; }
+        .accent { color: #38bdf8; }
 
         @media (max-width: 900px) {
-            .dashboard { grid-template-columns: 1fr; }
+            .detail-area { grid-template-columns: 1fr; }
+            .sessions-row { grid-template-columns: 1fr; }
             .control-panel { flex-direction: column; align-items: stretch; }
         }
     </style>
@@ -205,13 +174,14 @@
         <a href="/compare">Compare</a>
         <a href="/live">Live MT5</a>
         <a href="/polymarket" class="active">Polymarket</a>
-        <div class="session-indicator">
-            <div class="status-dot dot-stopped" id="status-dot"></div>
-            <span id="status-text" style="font-size:0.8rem;color:#64748b;">Inactif</span>
+        <div class="global-stats">
+            <div class="gs-item"><span class="gs-label">Sessions:</span> <span class="gs-value" id="g-sessions">0</span></div>
+            <div class="gs-item"><span class="gs-label">P&L:</span> <span class="gs-value neutral" id="g-pnl">0.00 EUR</span></div>
         </div>
     </nav>
 
     <div class="dashboard">
+        <!-- ── Control: always visible, can launch N sessions ── -->
         <div class="control-panel">
             <div class="ctrl-group">
                 <label>Symbol</label>
@@ -244,91 +214,58 @@
                     <option value="cpu">CPU</option>
                 </select>
             </div>
-            <button class="btn-action btn-go" id="btn-start" onclick="startSession()">Demarrer</button>
-            <button class="btn-action btn-halt" id="btn-stop" onclick="stopSession()" style="display:none;">Arreter</button>
+            <button class="btn-action btn-go" onclick="startSession()">+ Lancer</button>
         </div>
 
-        <div class="sidebar">
-            <div class="stat-card">
-                <div class="stat-label">Prix actuel</div>
-                <div class="stat-value accent" id="stat-price">--</div>
-                <div class="stat-sub" id="stat-symbol">BTCUSDT</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Derniere prediction</div>
-                <div id="stat-prediction"><span class="pred-badge pred-flat">--</span></div>
-                <div class="stat-sub" id="stat-pred-return"></div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">P&L Total</div>
-                <div class="stat-value neutral" id="stat-pnl">0.00 EUR</div>
-                <div class="stat-sub" id="stat-roi">ROI: 0.0%</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Accuracy</div>
-                <div class="stat-value accent" id="stat-accuracy">--</div>
-                <div class="stat-sub" id="stat-bets">0 bets | 0 wins</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Total Mise</div>
-                <div class="stat-value neutral" id="stat-wagered">0.00 EUR</div>
-                <div class="stat-sub" id="stat-open-bets">0 open bets</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Modele</div>
-                <div class="stat-value" id="stat-model" style="font-size:1rem;">--</div>
-                <div class="stat-sub" id="stat-model-info"></div>
-            </div>
+        <!-- ── Session Cards ── -->
+        <div class="sessions-row" id="sessions-row">
+            <div class="empty-sessions" id="empty-sessions">Aucune session. Configurez et lancez-en une.</div>
         </div>
 
-        <div class="main-area">
-            <div class="chart-panel">
-                <div class="panel-title">P&L cumule</div>
-                <div id="pnl-chart" style="height:220px;"></div>
-            </div>
-            <div class="log-panel" id="log-panel">
-                <div class="panel-title">Logs en direct</div>
-                <div id="log-stream">
-                    <div class="empty-state" id="log-empty">
-                        <div class="icon">&#9889;</div>
-                        <p>Demarrez une session pour voir les logs</p>
+        <!-- ── Detail (selected session) ── -->
+        <div class="detail-area" id="detail-area" style="display:none;">
+            <div class="detail-left">
+                <div class="chart-panel">
+                    <div class="panel-title">P&L cumule &mdash; <span id="detail-title">--</span></div>
+                    <div id="pnl-chart" style="height:220px;"></div>
+                </div>
+                <div class="bets-panel">
+                    <div class="panel-title">Historique des bets</div>
+                    <div id="bets-container">
+                        <table class="bets-table" id="bets-table" style="display:none;">
+                            <thead><tr><th>Time</th><th>Dir</th><th>Cote</th><th>Mise</th><th>Profit</th><th>Status</th><th>Actual</th></tr></thead>
+                            <tbody id="bets-tbody"></tbody>
+                        </table>
+                        <div id="bets-empty" style="text-align:center;color:#475569;padding:20px;font-size:0.85rem;">Aucun bet</div>
                     </div>
                 </div>
             </div>
-        </div>
-
-        <div class="bets-panel">
-            <div class="panel-title">Historique des bets</div>
-            <div id="bets-container">
-                <table class="bets-table" id="bets-table" style="display:none;">
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Direction</th>
-                            <th>Cote</th>
-                            <th>Mise</th>
-                            <th>Profit</th>
-                            <th>Status</th>
-                            <th>Actual</th>
-                            <th>Window</th>
-                        </tr>
-                    </thead>
-                    <tbody id="bets-tbody"></tbody>
-                </table>
-                <div class="empty-state" id="bets-empty">
-                    <p>Aucun bet pour l'instant</p>
+            <div class="detail-right">
+                <div class="log-panel" id="log-panel">
+                    <div class="panel-title">
+                        <span>Logs</span>
+                        <select class="log-filter" id="log-filter" onchange="renderAllLogs()">
+                            <option value="all">Toutes les sessions</option>
+                            <option value="selected">Session selectionnee</option>
+                        </select>
+                    </div>
+                    <div id="log-stream"></div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        let sessionId = null;
-        let eventSource = null;
-        const MAX_LOG_LINES = 300;
+        // ─── State ──────────────────────────────────────────────
+        var sessions = {};       // sid -> state snapshot
+        var sseConns = {};       // sid -> EventSource
+        var allLogs = [];        // {sid, timestamp, level, message}
+        var selectedSid = null;
+        var MAX_LOGS = 600;
 
+        // ─── Start / Stop ───────────────────────────────────────
         async function startSession() {
-            const config = {
+            var config = {
                 symbol: document.getElementById('cfg-symbol').value,
                 model_key: document.getElementById('cfg-model').value,
                 bet_amount: parseFloat(document.getElementById('cfg-bet').value),
@@ -337,152 +274,217 @@
                 timeframe: 'M5',
             };
             try {
-                const resp = await fetch('/api/polymarket/start', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
+                var resp = await fetch('/api/polymarket/start', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(config),
                 });
-                const data = await resp.json();
+                var data = await resp.json();
                 if (data.success) {
-                    sessionId = data.session_id;
-                    onSessionStarted();
-                    connectSSE();
+                    connectSSE(data.session_id);
                 } else {
                     alert('Erreur: ' + data.error);
                 }
             } catch(e) { alert('Erreur: ' + e.message); }
         }
 
-        async function stopSession() {
-            if (!sessionId) return;
+        async function stopSession(sid) {
             try {
                 await fetch('/api/polymarket/stop', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({session_id: sessionId}),
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({session_id: sid}),
                 });
             } catch(e) { console.error(e); }
-            onSessionStopped();
+            if (sseConns[sid]) { sseConns[sid].close(); delete sseConns[sid]; }
         }
 
-        function onSessionStarted() {
-            document.getElementById('btn-start').style.display = 'none';
-            document.getElementById('btn-stop').style.display = '';
-            document.getElementById('status-dot').className = 'status-dot dot-running';
-            document.getElementById('status-text').textContent = 'En cours';
-            document.getElementById('status-text').style.color = '#22c55e';
-            document.getElementById('log-stream').textContent = '';
-        }
-
-        function onSessionStopped() {
-            document.getElementById('btn-start').style.display = '';
-            document.getElementById('btn-stop').style.display = 'none';
-            document.getElementById('status-dot').className = 'status-dot dot-stopped';
-            document.getElementById('status-text').textContent = 'Arrete';
-            document.getElementById('status-text').style.color = '#64748b';
-            if (eventSource) { eventSource.close(); eventSource = null; }
-        }
-
-        function connectSSE() {
-            if (eventSource) eventSource.close();
-            eventSource = new EventSource('/api/polymarket/stream?session_id=' + encodeURIComponent(sessionId));
-            eventSource.onmessage = function(e) {
-                const msg = JSON.parse(e.data);
-                if (msg.type === 'log') appendLog(msg.data);
-                else if (msg.type === 'state') updateDashboard(msg.data);
-                else if (msg.type === 'done') { onSessionStopped(); fetchFinalState(); }
+        // ─── SSE ────────────────────────────────────────────────
+        function connectSSE(sid) {
+            if (sseConns[sid]) { sseConns[sid].close(); }
+            var es = new EventSource('/api/polymarket/stream?session_id=' + encodeURIComponent(sid));
+            es.onmessage = function(e) {
+                var msg = JSON.parse(e.data);
+                if (msg.type === 'log') {
+                    msg.data._sid = sid;
+                    allLogs.push(msg.data);
+                    if (allLogs.length > MAX_LOGS) allLogs.shift();
+                    renderNewLog(msg.data);
+                } else if (msg.type === 'state') {
+                    sessions[sid] = msg.data;
+                    renderSessions();
+                    if (sid === selectedSid) renderDetail(msg.data);
+                    renderGlobalStats();
+                } else if (msg.type === 'done') {
+                    if (sseConns[sid]) { sseConns[sid].close(); delete sseConns[sid]; }
+                }
             };
-            eventSource.onerror = function() {
-                setTimeout(function() { if (sessionId) connectSSE(); }, 3000);
+            es.onerror = function() {
+                setTimeout(function() { if (sessions[sid] && sessions[sid].status === 'running') connectSSE(sid); }, 3000);
             };
+            sseConns[sid] = es;
+            selectedSid = sid;
         }
 
-        async function fetchFinalState() {
-            if (!sessionId) return;
-            try {
-                const resp = await fetch('/api/polymarket/status?session_id=' + encodeURIComponent(sessionId));
-                const state = await resp.json();
-                updateDashboard(state);
-            } catch(e) { console.error(e); }
+        // ─── Session Cards ──────────────────────────────────────
+        function renderSessions() {
+            var container = document.getElementById('sessions-row');
+            var keys = Object.keys(sessions);
+            if (keys.length === 0) {
+                container.innerHTML = '<div class="empty-sessions">Aucune session. Configurez et lancez-en une.</div>';
+                document.getElementById('detail-area').style.display = 'none';
+                return;
+            }
+            var html = '';
+            for (var i = 0; i < keys.length; i++) {
+                var sid = keys[i];
+                var s = sessions[sid];
+                var st = s.status || 'stopped';
+                var sel = sid === selectedSid ? ' selected' : '';
+                var pnl = (s.summary && s.summary.total_pnl_eur) || 0;
+                var pnlCls = pnl >= 0 ? 'pos' : 'neg';
+                var pred = s.last_prediction;
+                var predHtml = '--';
+                if (pred) {
+                    var pcls = pred.direction === 'UP' ? 'pred-up' : pred.direction === 'DOWN' ? 'pred-down' : 'pred-flat';
+                    predHtml = '<span class="pred-badge ' + pcls + '">' + escapeHtml(pred.direction) + '</span>';
+                }
+                html += '<div class="session-card ' + st + sel + '" onclick="selectSession(\'' + sid + '\')">';
+                html += '<div class="sc-header"><span class="sc-title">' + escapeHtml(s.symbol || '?') + ' / ' + escapeHtml(s.model_key || '?') + '</span>';
+                html += '<span class="sc-status sc-status-' + st + '">' + st + '</span></div>';
+                html += '<div class="sc-grid">';
+                html += '<span class="sc-label">P&L</span><span class="sc-val ' + pnlCls + '">' + (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + ' EUR</span>';
+                html += '<span class="sc-label">Accuracy</span><span class="sc-val">' + ((s.summary && s.summary.accuracy) || 0) + '%</span>';
+                html += '<span class="sc-label">Bets</span><span class="sc-val">' + ((s.summary && s.summary.total_bets) || 0) + ' (' + ((s.summary && s.summary.wins) || 0) + 'W)</span>';
+                html += '<span class="sc-label">Cycle</span><span class="sc-val">' + (s.cycle || 0) + '</span>';
+                html += '</div>';
+                html += '<div class="sc-pred">' + predHtml + '</div>';
+                if (st === 'running') {
+                    html += '<button class="sc-stop" onclick="event.stopPropagation();stopSession(\'' + sid + '\')" title="Arreter">&#x23F9;</button>';
+                }
+                html += '</div>';
+            }
+            container.innerHTML = html;
+            document.getElementById('detail-area').style.display = selectedSid ? '' : 'none';
         }
 
-        function updateDashboard(state) {
-            if (state.status === 'running') {
-                document.getElementById('status-dot').className = 'status-dot dot-running';
-                document.getElementById('status-text').textContent = 'Cycle ' + state.cycle;
-                document.getElementById('status-text').style.color = '#22c55e';
-            } else if (state.status === 'error') {
-                document.getElementById('status-dot').className = 'status-dot dot-error';
-                document.getElementById('status-text').textContent = 'Erreur';
-                document.getElementById('status-text').style.color = '#ef4444';
-            }
+        function selectSession(sid) {
+            selectedSid = sid;
+            renderSessions();
+            if (sessions[sid]) renderDetail(sessions[sid]);
+            renderAllLogs();
+        }
 
-            if (state.current_price) {
-                document.getElementById('stat-price').textContent = '$' + Number(state.current_price).toLocaleString('en', {minimumFractionDigits:2, maximumFractionDigits:2});
+        // ─── Global Stats ───────────────────────────────────────
+        function renderGlobalStats() {
+            var keys = Object.keys(sessions);
+            document.getElementById('g-sessions').textContent = keys.length;
+            var totalPnl = 0;
+            for (var i = 0; i < keys.length; i++) {
+                var s = sessions[keys[i]];
+                if (s.summary) totalPnl += s.summary.total_pnl_eur || 0;
             }
-            document.getElementById('stat-symbol').textContent = state.symbol || 'BTCUSDT';
+            var el = document.getElementById('g-pnl');
+            el.textContent = (totalPnl >= 0 ? '+' : '') + totalPnl.toFixed(2) + ' EUR';
+            el.className = 'gs-value ' + (totalPnl >= 0 ? 'positive' : 'negative');
+        }
 
-            if (state.last_prediction) {
-                var pred = state.last_prediction;
-                var cls = pred.direction === 'UP' ? 'pred-up' : pred.direction === 'DOWN' ? 'pred-down' : 'pred-flat';
-                document.getElementById('stat-prediction').innerHTML = '<span class="pred-badge ' + cls + '">' + escapeHtml(pred.direction) + '</span>';
-                if (pred.predicted_return !== null && pred.predicted_return !== undefined) {
-                    document.getElementById('stat-pred-return').textContent = 'Return predit: ' + (pred.predicted_return * 100).toFixed(4) + '%';
+        // ─── Detail View ─────────────────────────────────────────
+        var pnlChartInit = false;
+        function renderDetail(state) {
+            document.getElementById('detail-title').textContent = (state.symbol || '?') + ' / ' + (state.model_key || '?');
+
+            // P&L Chart
+            if (state.pnl_history && state.pnl_history.length > 1) {
+                var times = state.pnl_history.map(function(h) { return h.timestamp.substring(11, 19); });
+                var pnls = state.pnl_history.map(function(h) { return h.cum_pnl; });
+                var traces = [{
+                    x: times, y: pnls, name: 'P&L', type: 'scatter', mode: 'lines+markers',
+                    line: { color: '#38bdf8', width: 2 }, marker: { size: 4 },
+                    fill: 'tozeroy', fillcolor: 'rgba(56,189,248,0.08)',
+                }];
+                var layout = {
+                    template: 'plotly_dark', paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+                    margin: { l: 50, r: 10, t: 10, b: 30 }, height: 220,
+                    xaxis: { gridcolor: '#1e293b', tickfont: { size: 10 } },
+                    yaxis: { title: '', gridcolor: '#1e293b', tickfont: { size: 10 }, ticksuffix: ' EUR' },
+                    showlegend: false,
+                };
+                if (!pnlChartInit) {
+                    Plotly.newPlot('pnl-chart', traces, layout, {responsive: true, displayModeBar: false});
+                    pnlChartInit = true;
+                } else {
+                    Plotly.update('pnl-chart', traces, layout);
                 }
             }
 
-            var s = state.summary || {};
-            var pnl = s.total_pnl_eur || 0;
-            var pnlEl = document.getElementById('stat-pnl');
-            pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + ' EUR';
-            pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'positive' : 'negative');
-            document.getElementById('stat-roi').textContent = 'ROI: ' + (s.roi_pct || 0) + '%';
-            document.getElementById('stat-accuracy').textContent = (s.accuracy || 0) + '%';
-            document.getElementById('stat-bets').textContent = (s.total_bets || 0) + ' bets | ' + (s.wins || 0) + ' wins';
-            document.getElementById('stat-wagered').textContent = (s.total_wagered_eur || 0).toFixed(2) + ' EUR';
-            document.getElementById('stat-open-bets').textContent = (s.open_bets || 0) + ' open bets';
-
-            if (state.model_info) {
-                document.getElementById('stat-model').textContent = state.model_info.name || state.model_key;
-                document.getElementById('stat-model-info').textContent = state.model_info.params + ' | ctx: ' + state.model_info.context_length;
+            // Bets table
+            var openBets = state.open_bets || [];
+            var settledBets = state.settled_bets || [];
+            var table = document.getElementById('bets-table');
+            var tbody = document.getElementById('bets-tbody');
+            var empty = document.getElementById('bets-empty');
+            if (openBets.length === 0 && settledBets.length === 0) {
+                table.style.display = 'none'; empty.style.display = ''; return;
             }
-
-            if (state.pnl_history && state.pnl_history.length > 1) renderPnlChart(state.pnl_history);
-            renderBets(state.open_bets || [], state.settled_bets || []);
+            table.style.display = ''; empty.style.display = 'none';
+            var html = '';
+            for (var i = 0; i < openBets.length; i++) {
+                var b = openBets[i];
+                var dCls = b.direction === 'UP' ? 'badge-up' : b.direction === 'DOWN' ? 'badge-down' : 'badge-flat';
+                html += '<tr><td>' + (b.timestamp || '').substring(11,19) + '</td>';
+                html += '<td><span class="' + dCls + '">' + escapeHtml(b.direction) + '</span></td>';
+                html += '<td>' + (b.pm_buy_price != null ? b.pm_buy_price.toFixed(4) : '--') + '</td>';
+                html += '<td>' + (b.bet_amount != null ? b.bet_amount.toFixed(2) : '--') + '</td>';
+                html += '<td class="neutral">--</td>';
+                html += '<td><span class="badge-open">OPEN</span></td><td>--</td></tr>';
+            }
+            var rev = settledBets.slice().reverse();
+            for (var j = 0; j < rev.length; j++) {
+                var b2 = rev[j];
+                var dc = b2.side === 'Up' ? 'badge-up' : 'badge-down';
+                var wc = b2.won ? 'badge-won' : 'badge-lost';
+                var pc = b2.profit_eur >= 0 ? 'positive' : 'negative';
+                html += '<tr><td>' + (b2.timestamp || '').substring(11,19) + '</td>';
+                html += '<td><span class="' + dc + '">' + escapeHtml(b2.side) + '</span></td>';
+                html += '<td>' + (b2.buy_price != null ? b2.buy_price.toFixed(4) : '--') + '</td>';
+                html += '<td>' + (b2.bet_amount != null ? b2.bet_amount.toFixed(2) : '--') + '</td>';
+                html += '<td class="' + pc + '">' + (b2.profit_eur >= 0 ? '+' : '') + (b2.profit_eur != null ? b2.profit_eur.toFixed(2) : '--') + '</td>';
+                html += '<td><span class="' + wc + '">' + (b2.won ? 'WON' : 'LOST') + '</span></td>';
+                html += '<td>' + escapeHtml(b2.actual_direction || '--') + '</td></tr>';
+            }
+            tbody.innerHTML = html;
         }
 
-        var pnlChartInit = false;
-        function renderPnlChart(history) {
-            var times = history.map(function(h) { return h.timestamp.substring(11, 19); });
-            var pnls = history.map(function(h) { return h.cum_pnl; });
-            var traces = [{
-                x: times, y: pnls, name: 'P&L', type: 'scatter', mode: 'lines+markers',
-                line: { color: '#38bdf8', width: 2 }, marker: { size: 4 },
-                fill: 'tozeroy', fillcolor: 'rgba(56,189,248,0.08)',
-            }];
-            var layout = {
-                template: 'plotly_dark', paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-                margin: { l: 50, r: 10, t: 10, b: 30 }, height: 220,
-                xaxis: { gridcolor: '#1e293b', tickfont: { size: 10 } },
-                yaxis: { title: '', gridcolor: '#1e293b', tickfont: { size: 10 }, ticksuffix: ' EUR' },
-                showlegend: false,
-            };
-            if (!pnlChartInit) {
-                Plotly.newPlot('pnl-chart', traces, layout, {responsive: true, displayModeBar: false});
-                pnlChartInit = true;
-            } else {
-                Plotly.update('pnl-chart', traces, layout);
-            }
-        }
+        // ─── Log Stream ─────────────────────────────────────────
+        function renderNewLog(log) {
+            // Only render if it matches the filter
+            var filter = document.getElementById('log-filter').value;
+            if (filter === 'selected' && log._sid !== selectedSid) return;
 
-        function appendLog(log) {
             var stream = document.getElementById('log-stream');
             var panel = document.getElementById('log-panel');
-            var el = document.getElementById('log-empty');
-            if (el) el.remove();
+            var line = buildLogLine(log);
+            stream.appendChild(line);
+            while (stream.children.length > MAX_LOGS) stream.removeChild(stream.firstChild);
+            panel.scrollTop = panel.scrollHeight;
+        }
 
+        function renderAllLogs() {
+            var stream = document.getElementById('log-stream');
+            var panel = document.getElementById('log-panel');
+            stream.textContent = '';
+            var filter = document.getElementById('log-filter').value;
+            for (var i = 0; i < allLogs.length; i++) {
+                var log = allLogs[i];
+                if (filter === 'selected' && log._sid !== selectedSid) continue;
+                stream.appendChild(buildLogLine(log));
+            }
+            panel.scrollTop = panel.scrollHeight;
+        }
+
+        function buildLogLine(log) {
             var timeStr = log.timestamp ? log.timestamp.substring(11, 19) : '';
             var msg = log.message || '';
+            var sidShort = (log._sid || '').substring(0, 4);
 
             var line = document.createElement('div');
             line.className = 'log-line';
@@ -491,24 +493,22 @@
             timeSpan.className = 'log-time';
             timeSpan.textContent = timeStr;
 
+            var sidSpan = document.createElement('span');
+            sidSpan.className = 'log-sid';
+            sidSpan.textContent = '[' + sidShort + ']';
+
             var msgSpan = document.createElement('span');
             var levelClass = log.level === 'ERROR' ? 'log-error' : log.level === 'WARNING' ? 'log-warning' : 'log-info';
 
-            // Highlight key patterns with colored spans
             if (msg.indexOf('KRONOS | UP') !== -1) {
-                msgSpan.className = levelClass;
                 addHighlightedLog(msgSpan, msg, 'UP', 'log-up', levelClass);
             } else if (msg.indexOf('KRONOS | DOWN') !== -1) {
-                msgSpan.className = levelClass;
                 addHighlightedLog(msgSpan, msg, 'DOWN', 'log-down', levelClass);
             } else if (msg.indexOf('SETTLED | +') !== -1) {
-                msgSpan.className = levelClass;
                 addHighlightedLog(msgSpan, msg, 'SETTLED', 'log-settled-won', levelClass);
             } else if (msg.indexOf('SETTLED | -') !== -1) {
-                msgSpan.className = levelClass;
                 addHighlightedLog(msgSpan, msg, 'SETTLED', 'log-settled-lost', levelClass);
             } else if (msg.indexOf('BET ') !== -1) {
-                msgSpan.className = levelClass;
                 addHighlightedLog(msgSpan, msg, 'BET', 'log-bet', levelClass);
             } else {
                 msgSpan.className = levelClass;
@@ -517,11 +517,10 @@
 
             line.appendChild(timeSpan);
             line.appendChild(document.createTextNode(' '));
+            line.appendChild(sidSpan);
+            line.appendChild(document.createTextNode(' '));
             line.appendChild(msgSpan);
-            stream.appendChild(line);
-
-            while (stream.children.length > MAX_LOG_LINES) stream.removeChild(stream.firstChild);
-            panel.scrollTop = panel.scrollHeight;
+            return line;
         }
 
         function addHighlightedLog(container, msg, keyword, highlightClass, baseClass) {
@@ -553,47 +552,23 @@
             return div.innerHTML;
         }
 
-        function renderBets(openBets, settledBets) {
-            var table = document.getElementById('bets-table');
-            var tbody = document.getElementById('bets-tbody');
-            var empty = document.getElementById('bets-empty');
-            if (openBets.length === 0 && settledBets.length === 0) {
-                table.style.display = 'none'; empty.style.display = ''; return;
-            }
-            table.style.display = ''; empty.style.display = 'none';
-            var html = '';
-            for (var i = 0; i < openBets.length; i++) {
-                var b = openBets[i];
-                var dirCls = b.direction === 'UP' ? 'badge-up' : b.direction === 'DOWN' ? 'badge-down' : 'badge-flat';
-                var ws = b.window_start_ts ? new Date(b.window_start_ts * 1000).toISOString().substring(11, 19) : '--';
-                var we = b.window_end_ts ? new Date(b.window_end_ts * 1000).toISOString().substring(11, 19) : '--';
-                html += '<tr><td>' + (b.timestamp || '').substring(11,19) + '</td>';
-                html += '<td><span class="' + dirCls + '">' + escapeHtml(b.direction) + '</span></td>';
-                html += '<td>' + (b.pm_buy_price != null ? b.pm_buy_price.toFixed(4) : '--') + '</td>';
-                html += '<td>' + (b.bet_amount != null ? b.bet_amount.toFixed(2) : '--') + ' EUR</td>';
-                html += '<td class="neutral">--</td>';
-                html += '<td><span class="badge-open">OPEN</span></td><td>--</td>';
-                html += '<td>' + ws + '-' + we + '</td></tr>';
-            }
-            var rev = settledBets.slice().reverse();
-            for (var j = 0; j < rev.length; j++) {
-                var b2 = rev[j];
-                var dCls = b2.side === 'Up' ? 'badge-up' : 'badge-down';
-                var wCls = b2.won ? 'badge-won' : 'badge-lost';
-                var pCls = b2.profit_eur >= 0 ? 'positive' : 'negative';
-                var ws2 = b2.window_start ? new Date(b2.window_start * 1000).toISOString().substring(11, 19) : '--';
-                var we2 = b2.window_end ? new Date(b2.window_end * 1000).toISOString().substring(11, 19) : '--';
-                html += '<tr><td>' + (b2.timestamp || '').substring(11,19) + '</td>';
-                html += '<td><span class="' + dCls + '">' + escapeHtml(b2.side) + '</span></td>';
-                html += '<td>' + (b2.buy_price != null ? b2.buy_price.toFixed(4) : '--') + '</td>';
-                html += '<td>' + (b2.bet_amount != null ? b2.bet_amount.toFixed(2) : '--') + ' EUR</td>';
-                html += '<td class="' + pCls + '">' + (b2.profit_eur >= 0 ? '+' : '') + (b2.profit_eur != null ? b2.profit_eur.toFixed(2) : '--') + ' EUR</td>';
-                html += '<td><span class="' + wCls + '">' + (b2.won ? 'WON' : 'LOST') + '</span></td>';
-                html += '<td>' + escapeHtml(b2.actual_direction || '--') + '</td>';
-                html += '<td>' + ws2 + '-' + we2 + '</td></tr>';
-            }
-            tbody.innerHTML = html;
+        // ─── Poll for sessions not tracked by SSE ────────────────
+        async function pollAll() {
+            try {
+                var resp = await fetch('/api/polymarket/status');
+                var data = await resp.json();
+                var all = data.sessions || {};
+                for (var sid in all) {
+                    if (!sessions[sid] && all[sid].status === 'running') {
+                        connectSSE(sid);
+                    } else if (sessions[sid] && all[sid].status !== 'running') {
+                        sessions[sid] = all[sid];
+                    }
+                }
+            } catch(e) { /* ignore */ }
         }
+        setInterval(pollAll, 10000);
+        pollAll();
     </script>
 </body>
 </html>

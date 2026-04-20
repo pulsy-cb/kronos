@@ -718,21 +718,30 @@ def load_kronos(model_key, device=None):
 
 def predict_direction(predictor, df, lookback, pred_len, timeframe_secs, sample_count=5):
     """
-    Run Kronos prediction and return (direction, current_price, predicted_price, pred_df).
+    Run Kronos prediction and return (direction, current_price, predicted_price, pred_df_or_error).
 
-    direction: "UP", "DOWN", or "FLAT"
+    direction: "UP", "DOWN", "FLAT", or None on failure
+    5th element: error string if prediction failed, None otherwise
     """
     if len(df) < lookback:
-        return None, None, None, None
+        return None, None, None, None, "Not enough data"
 
     x_df = df.iloc[-lookback:][["open", "high", "low", "close", "volume", "amount"]].copy()
     x_timestamp = df.iloc[-lookback:]["timestamps"]
+
+    # Ensure x_timestamp is a Series (not DatetimeIndex) for .dt access
+    if isinstance(x_timestamp, pd.DatetimeIndex):
+        x_timestamp = pd.Series(x_timestamp, name="timestamps")
 
     future_times = pd.date_range(
         start=x_timestamp.iloc[-1] + pd.Timedelta(seconds=timeframe_secs),
         periods=pred_len,
         freq=pd.Timedelta(seconds=timeframe_secs),
     )
+
+    # Ensure future_times is a Series (not DatetimeIndex) for .dt access
+    if isinstance(future_times, pd.DatetimeIndex):
+        future_times = pd.Series(future_times, name="timestamps")
 
     try:
         pred_df = predictor.predict(
@@ -745,8 +754,8 @@ def predict_direction(predictor, df, lookback, pred_len, timeframe_secs, sample_
             sample_count=sample_count,
             verbose=False,
         )
-    except Exception:
-        return None, None, None, None
+    except Exception as e:
+        return None, None, None, None, str(e)
 
     current_close = x_df["close"].iloc[-1]
     predicted_close = pred_df["close"].iloc[-1]
@@ -760,7 +769,7 @@ def predict_direction(predictor, df, lookback, pred_len, timeframe_secs, sample_
     else:
         direction = "FLAT"
 
-    return direction, current_close, predicted_close, pred_df
+    return direction, current_close, predicted_close, pred_df, None
 
 
 def seconds_to_next_window():
@@ -858,12 +867,12 @@ def run_polymarket_loop(args):
             logger.info(f"[Cycle {cycle}] Price: {current_price:.2f} | Candles: {len(df)}")
 
             # 4) Run Kronos prediction
-            direction, cur_price, pred_price, pred_df = predict_direction(
+            direction, cur_price, pred_price, pred_df, pred_err = predict_direction(
                 predictor, df, lookback, pred_len, tf_secs, sample_count=args.samples
             )
 
             if direction is None:
-                logger.warning("Prediction failed — skipping")
+                logger.warning(f"Prediction failed: {pred_err}")
                 time.sleep(60)
                 continue
 

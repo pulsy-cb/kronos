@@ -19,6 +19,23 @@ import torch
 import pandas as pd
 import numpy as np
 
+
+def _to_native(obj):
+    """Recursively convert numpy/torch types to native Python for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: _to_native(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_native(v) for v in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, float) and (obj != obj):  # NaN check
+        return None
+    return obj
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from live_cli import (
@@ -72,7 +89,7 @@ class PolymarketSession:
 
     def get_state(self):
         with self._lock:
-            return {
+            raw = {
                 "status": self.status,
                 "error_message": self.error_message,
                 "cycle": self.cycle,
@@ -85,10 +102,11 @@ class PolymarketSession:
                 "stopped_at": self._stopped_at,
                 "summary": dict(self._summary),
                 "open_bets": list(self._open_bets),
-                "settled_bets": list(self._settled_bets[-50:]),  # last 50
+                "settled_bets": list(self._settled_bets[-50:]),
                 "pnl_history": list(self._pnl_history),
                 "log_count": len(self._log_entries),
             }
+        return _to_native(raw)
 
     def get_new_logs(self, since_index: int):
         """Return log entries starting from since_index."""
@@ -224,20 +242,21 @@ class PolymarketSession:
                     self._add_settled(r)
 
             # 2) Wait until ~15s before next 5-min window
-            secs_to_window = seconds_to_next_window()
-            if secs_to_window > 20:
-                wait_secs = secs_to_window - 15
-                next_window = datetime.now(timezone.utc) + timedelta(seconds=wait_secs + 15)
-                self._log("INFO",
-                    f"[Cycle {self.cycle}] Waiting {wait_secs:.0f}s "
-                    f"(window at {next_window.strftime('%H:%M:%S')} UTC)"
-                )
-                # Sleep in small chunks to check stop_event
-                end_time = time.time() + wait_secs
-                while time.time() < end_time and not self._stop_event.is_set():
-                    time.sleep(min(1, end_time - time.time()))
-                if self._stop_event.is_set():
-                    break
+            #    On first cycle, skip the wait — predict immediately
+            if self.cycle > 1:
+                secs_to_window = seconds_to_next_window()
+                if secs_to_window > 20:
+                    wait_secs = secs_to_window - 15
+                    next_window = datetime.now(timezone.utc) + timedelta(seconds=wait_secs + 15)
+                    self._log("INFO",
+                        f"[Cycle {self.cycle}] Waiting {wait_secs:.0f}s "
+                        f"(window at {next_window.strftime('%H:%M:%S')} UTC)"
+                    )
+                    end_time = time.time() + wait_secs
+                    while time.time() < end_time and not self._stop_event.is_set():
+                        time.sleep(min(1, end_time - time.time()))
+                    if self._stop_event.is_set():
+                        break
 
             # 3) Fetch fresh data
             df, err = feed.get_klines(self.symbol, self.timeframe, limit=500)
@@ -251,13 +270,13 @@ class PolymarketSession:
             self._log("INFO", f"[Cycle {self.cycle}] Price: {current_price:.2f}")
 
             # 4) Run Kronos prediction
-            direction, cur_price, pred_price, pred_df = predict_direction(
+            direction, cur_price, pred_price, pred_df, pred_err = predict_direction(
                 predictor, df, lookback, pred_len, tf_secs,
                 sample_count=self.samples
             )
 
             if direction is None:
-                self._log("WARNING", "Prediction failed — skipping")
+                self._log("ERROR", f"Prediction failed: {pred_err}")
                 time.sleep(30)
                 continue
 
@@ -285,12 +304,13 @@ class PolymarketSession:
             # Sync tracker state
             self._update_from_tracker(tracker)
 
-            # 6) Wait for window start
-            secs_to_window = seconds_to_next_window()
-            if secs_to_window > 0:
-                end_time = time.time() + secs_to_window + 2
-                while time.time() < end_time and not self._stop_event.is_set():
-                    time.sleep(min(1, end_time - time.time()))
+            # 6) Wait for next window start (skip on first cycle — already in-window)
+            if self.cycle > 1:
+                secs_to_window = seconds_to_next_window()
+                if secs_to_window > 0:
+                    end_time = time.time() + secs_to_window + 2
+                    while time.time() < end_time and not self._stop_event.is_set():
+                        time.sleep(min(1, end_time - time.time()))
 
         # Final sync
         self._update_from_tracker(tracker)
