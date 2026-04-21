@@ -41,9 +41,10 @@ def load_events(filepath):
 def load_all_logs(pattern=None):
     """Load events from one or more log files."""
     if pattern is None:
-        pattern = "webui/logs/live_*.jsonl"
-
-    files = sorted(glob.glob(pattern))
+        # Default: match both live and backtest logs
+        files = sorted(glob.glob("webui/logs/live_*.jsonl") + glob.glob("webui/logs/backtest_*.jsonl"))
+    else:
+        files = sorted(glob.glob(pattern))
     if not files:
         print(f"Aucun fichier trouvé pour: {pattern}")
         sys.exit(1)
@@ -51,11 +52,28 @@ def load_all_logs(pattern=None):
     all_events = []
     for fp in files:
         fname = os.path.basename(fp)
-        parts = fname.replace("live_", "").replace(".jsonl", "").split("_")
+        parts = fname.replace("live_", "").replace("backtest_", "").replace(".jsonl", "").split("_")
         # live_XAUUSD_M1_2026-04-21.jsonl -> symbol=XAUUSD, tf=M1, date=2026-04-21
-        symbol = parts[0] if len(parts) >= 1 else "?"
-        tf = parts[1] if len(parts) >= 2 else "?"
-        date = parts[2] if len(parts) >= 3 else "?"
+        # backtest_xaumodel-local_XAUUSD_M1_2026-04-21.jsonl -> need to find date (has dashes)
+        # Find the date part (contains dashes like 2026-04-21)
+        symbol = "?"
+        tf = "?"
+        date = "?"
+        for i, p in enumerate(parts):
+            if "-" in p and len(p) >= 8:  # looks like a date
+                date = p
+                # symbol and tf are before the date
+                if i >= 2:
+                    tf = parts[i - 1]
+                    symbol = parts[i - 2]
+                elif i == 1:
+                    tf = parts[0]
+                break
+        else:
+            # Fallback: old format live_XAUUSD_M1_2026-04-21
+            symbol = parts[0] if len(parts) >= 1 else "?"
+            tf = parts[1] if len(parts) >= 2 else "?"
+            date = parts[2] if len(parts) >= 3 else "?"
 
         events = load_events(fp)
         for e in events:
@@ -74,56 +92,77 @@ def load_all_logs(pattern=None):
 
 # ── Parsing ────────────────────────────────────────────────────────────────
 
+def _build_trade(open_ev, close_ev, ticket):
+    """Build a trade dict from matched open/close events."""
+    pnl = close_ev.get("pnl", 0.0)
+    direction = close_ev.get("direction", open_ev.get("direction", "?"))
+    duration_min = 0
+    try:
+        t_open = datetime.fromisoformat(open_ev["timestamp"])
+        t_close = datetime.fromisoformat(close_ev["timestamp"])
+        duration_min = (t_close - t_open).total_seconds() / 60.0
+    except (ValueError, KeyError):
+        pass
+
+    return {
+        "ticket": ticket,
+        "model_key": open_ev.get("model_key", "?"),
+        "model_name": open_ev.get("model_name", "?"),
+        "symbol": open_ev.get("_symbol", open_ev.get("symbol", "?")),
+        "session_id": open_ev.get("session_id", "?"),
+        "direction": direction,
+        "entry_price": open_ev.get("price", 0),
+        "exit_price": close_ev.get("price", 0),
+        "volume": open_ev.get("volume", 0),
+        "sl": open_ev.get("sl"),
+        "tp": open_ev.get("tp"),
+        "pnl": pnl,
+        "reason": close_ev.get("reason", "?"),
+        "duration_min": round(duration_min, 2),
+        "open_ts": open_ev.get("timestamp", ""),
+        "close_ts": close_ev.get("timestamp", ""),
+    }
+
+
 def parse_trades(events):
     """
-    Match trade open/close pairs by ticket.
+    Match trade open/close pairs by ticket (live) or sequential matching (backtest).
     Returns list of trade dicts with computed fields.
     """
-    opens = {}  # ticket -> event
+    opens_by_ticket = {}
+    orphan_opens = []
+    closes_no_ticket = []
     trades = []
 
     for e in events:
         if e.get("type") != "trade":
             continue
         ticket = e.get("ticket")
-        if ticket is None:
-            continue
-        if e.get("action") == "open":
-            opens[ticket] = e
-        elif e.get("action") == "close":
-            open_ev = opens.pop(ticket, None)
-            if open_ev is None:
-                # orphan close, skip
-                continue
-            close_ev = e
-            pnl = close_ev.get("pnl", 0.0)
-            direction = close_ev.get("direction", open_ev.get("direction", "?"))
-            duration_min = 0
-            try:
-                t_open = datetime.fromisoformat(open_ev["timestamp"])
-                t_close = datetime.fromisoformat(close_ev["timestamp"])
-                duration_min = (t_close - t_open).total_seconds() / 60.0
-            except (ValueError, KeyError):
-                pass
+        action = e.get("action")
 
-            trades.append({
-                "ticket": ticket,
-                "model_key": open_ev.get("model_key", "?"),
-                "model_name": open_ev.get("model_name", "?"),
-                "symbol": open_ev.get("_symbol", "?"),
-                "session_id": open_ev.get("session_id", "?"),
-                "direction": direction,
-                "entry_price": open_ev.get("price", 0),
-                "exit_price": close_ev.get("price", 0),
-                "volume": open_ev.get("volume", 0),
-                "sl": open_ev.get("sl"),
-                "tp": open_ev.get("tp"),
-                "pnl": pnl,
-                "reason": close_ev.get("reason", "?"),
-                "duration_min": round(duration_min, 2),
-                "open_ts": open_ev.get("timestamp", ""),
-                "close_ts": close_ev.get("timestamp", ""),
-            })
+        if ticket is not None:
+            if action == "open":
+                opens_by_ticket[ticket] = e
+            elif action == "close":
+                open_ev = opens_by_ticket.pop(ticket, None)
+                if open_ev is None:
+                    continue
+                trades.append(_build_trade(open_ev, e, ticket))
+        else:
+            if action == "open":
+                orphan_opens.append(e)
+            elif action == "close":
+                closes_no_ticket.append(e)
+
+    # Sequential matching for backtest logs (no ticket)
+    for close_ev in closes_no_ticket:
+        mk = close_ev.get("model_key", "?")
+        sid = close_ev.get("session_id", "?")
+        for i, open_ev in enumerate(orphan_opens):
+            if open_ev.get("model_key", "?") == mk and open_ev.get("session_id", "?") == sid:
+                orphan_opens.pop(i)
+                trades.append(_build_trade(open_ev, close_ev, None))
+                break
 
     return trades
 

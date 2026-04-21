@@ -38,10 +38,24 @@ def load_events(filepath):
 
 def load_and_tag(filepath):
     fname = os.path.basename(filepath)
-    parts = fname.replace("live_", "").replace(".jsonl", "").split("_")
-    symbol = parts[0] if len(parts) >= 1 else "?"
-    tf = parts[1] if len(parts) >= 2 else "?"
-    date = parts[2] if len(parts) >= 3 else "?"
+    parts = fname.replace("live_", "").replace("backtest_", "").replace(".jsonl", "").split("_")
+
+    symbol = "?"
+    tf = "?"
+    date = "?"
+    for i, p in enumerate(parts):
+        if "-" in p and len(p) >= 8:
+            date = p
+            if i >= 2:
+                tf = parts[i - 1]
+                symbol = parts[i - 2]
+            elif i == 1:
+                tf = parts[0]
+            break
+    else:
+        symbol = parts[0] if len(parts) >= 1 else "?"
+        tf = parts[1] if len(parts) >= 2 else "?"
+        date = parts[2] if len(parts) >= 3 else "?"
 
     events = load_events(filepath)
     for e in events:
@@ -52,48 +66,71 @@ def load_and_tag(filepath):
     return events, date, symbol
 
 
+def _build_trade_td(open_ev, close_ev, ticket):
+    """Build a trade dict for temporal decay analysis."""
+    pnl = close_ev.get("pnl", 0.0)
+    direction = close_ev.get("direction", open_ev.get("direction", "?"))
+    try:
+        t_open = datetime.fromisoformat(open_ev["timestamp"])
+        t_close = datetime.fromisoformat(close_ev["timestamp"])
+        duration_min = (t_close - t_open).total_seconds() / 60.0
+        close_hour = t_close
+    except (ValueError, KeyError):
+        duration_min = 0
+        close_hour = None
+    return {
+        "ticket": ticket,
+        "model_key": open_ev.get("model_key", "?"),
+        "model_name": open_ev.get("model_name", "?"),
+        "symbol": open_ev.get("_symbol", open_ev.get("symbol", "?")),
+        "direction": direction,
+        "entry_price": open_ev.get("price", 0),
+        "exit_price": close_ev.get("price", 0),
+        "volume": open_ev.get("volume", 0),
+        "pnl": pnl,
+        "reason": close_ev.get("reason", "?"),
+        "duration_min": round(duration_min, 2),
+        "close_time": close_hour,
+        "close_ts": close_ev.get("timestamp", ""),
+    }
+
+
 def parse_trades(events):
-    opens = {}
+    opens_by_ticket = {}
+    orphan_opens = []
+    closes_no_ticket = []
     trades = []
+
     for e in events:
         if e.get("type") != "trade":
             continue
         ticket = e.get("ticket")
-        if ticket is None:
-            continue
-        if e.get("action") == "open":
-            opens[ticket] = e
-        elif e.get("action") == "close":
-            open_ev = opens.pop(ticket, None)
-            if open_ev is None:
-                continue
-            close_ev = e
-            pnl = close_ev.get("pnl", 0.0)
-            direction = close_ev.get("direction", open_ev.get("direction", "?"))
-            try:
-                t_open = datetime.fromisoformat(open_ev["timestamp"])
-                t_close = datetime.fromisoformat(close_ev["timestamp"])
-                duration_min = (t_close - t_open).total_seconds() / 60.0
-                close_hour = t_close
-            except (ValueError, KeyError):
-                duration_min = 0
-                close_hour = None
+        action = e.get("action")
 
-            trades.append({
-                "ticket": ticket,
-                "model_key": open_ev.get("model_key", "?"),
-                "model_name": open_ev.get("model_name", "?"),
-                "symbol": open_ev.get("_symbol", "?"),
-                "direction": direction,
-                "entry_price": open_ev.get("price", 0),
-                "exit_price": close_ev.get("price", 0),
-                "volume": open_ev.get("volume", 0),
-                "pnl": pnl,
-                "reason": close_ev.get("reason", "?"),
-                "duration_min": round(duration_min, 2),
-                "close_time": close_hour,
-                "close_ts": close_ev.get("timestamp", ""),
-            })
+        if ticket is not None:
+            if action == "open":
+                opens_by_ticket[ticket] = e
+            elif action == "close":
+                open_ev = opens_by_ticket.pop(ticket, None)
+                if open_ev is None:
+                    continue
+                trades.append(_build_trade_td(open_ev, e, ticket))
+        else:
+            if action == "open":
+                orphan_opens.append(e)
+            elif action == "close":
+                closes_no_ticket.append(e)
+
+    # Sequential matching for backtest logs (no ticket)
+    for close_ev in closes_no_ticket:
+        mk = close_ev.get("model_key", "?")
+        sid = close_ev.get("session_id", "?")
+        for i, open_ev in enumerate(orphan_opens):
+            if open_ev.get("model_key", "?") == mk and open_ev.get("session_id", "?") == sid:
+                orphan_opens.pop(i)
+                trades.append(_build_trade_td(open_ev, close_ev, None))
+                break
+
     return trades
 
 
@@ -431,7 +468,7 @@ def print_cross_day_summary(all_results):
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
-    pattern = sys.argv[1] if len(sys.argv) > 1 else "webui/logs/live_XAUUSD_M1_*.jsonl"
+    pattern = sys.argv[1] if len(sys.argv) > 1 else "webui/logs/*XAUUSD*M1*.jsonl"
 
     files = sorted(glob.glob(pattern))
     if not files:

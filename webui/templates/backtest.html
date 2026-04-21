@@ -530,6 +530,8 @@
                 batch_size: parseInt(document.getElementById('batch-size').value),
                 start_date: document.getElementById('backtest-start').value || null,
                 end_date: document.getElementById('backtest-end').value || null,
+                model_key: document.getElementById('model-select').value || '',
+                model_name: document.getElementById('model-select').selectedOptions[0]?.text || '',
             };
 
             try {

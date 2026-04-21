@@ -34,6 +34,12 @@ except ImportError:
     print("Warning: Backtest engine not available")
 
 try:
+    from backtest_logger import detect_symbol_from_path, detect_timeframe_from_path
+    BACKTEST_LOGGER_AVAILABLE = True
+except ImportError:
+    BACKTEST_LOGGER_AVAILABLE = False
+
+try:
     from live.session import TradingSessionManager
     LIVE_AVAILABLE = True
 except Exception as e:
@@ -817,6 +823,11 @@ def backtest_start():
         'stop_loss_pct': float(data.get('stop_loss_pct', 0.001)),
         'take_profit_pct': float(data.get('take_profit_pct', 0.002)),
         'max_hold_bars': int(data.get('max_hold_bars', 5)),
+        'model_key': data.get('model_key', 'unknown'),
+        'model_name': data.get('model_name', data.get('model_key', 'unknown')),
+        'symbol': detect_symbol_from_path(file_path) if BACKTEST_LOGGER_AVAILABLE else '?',
+        'timeframe': detect_timeframe_from_path(file_path) if BACKTEST_LOGGER_AVAILABLE else '?',
+        'log_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs'),
     }
 
     if len(df) < params['lookback'] + params['pred_len']:

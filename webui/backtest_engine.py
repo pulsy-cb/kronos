@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import plotly.utils
 
 from model.kronos import set_inference_seed
+from backtest_logger import BacktestLogger, extract_date_from_signals
 
 
 class BacktestSession:
@@ -317,6 +318,9 @@ class BacktestSession:
             trade_results, initial_capital, df
         )
 
+        # --- Write JSONL log for analysis ---
+        self._write_backtest_log(signals, trade_results, params)
+
         self.results = {
             "params": params,
             "metrics": metrics,
@@ -327,6 +331,75 @@ class BacktestSession:
             "trades": trade_results["trades"],
             "price_data": self._prepare_price_data(df),
         }
+
+    # ------------------------------------------------------------------
+    # JSONL logging for analysis scripts
+    # ------------------------------------------------------------------
+
+    def _write_backtest_log(self, signals, trade_results, params):
+        """Write backtest results to JSONL log file (same format as live logs)."""
+        model_key = params.get("model_key", "unknown")
+        model_name = params.get("model_name", model_key)
+        symbol = params.get("symbol", "?")
+        timeframe = params.get("timeframe", "?")
+
+        logger = BacktestLogger(
+            model_key=model_key,
+            model_name=model_name,
+            symbol=symbol,
+            timeframe=timeframe,
+            log_dir=params.get("log_dir", "logs"),
+        )
+
+        date_str = extract_date_from_signals(signals)
+        logger.open(date_str)
+
+        # Write signal events
+        for s in signals:
+            logger.log_signal(
+                signal=s["signal"],
+                predicted_return=s["predicted_return"],
+                predicted_close=s["predicted_close"],
+                current_close=s["current_close"],
+                timestamp=s["timestamp"],
+            )
+
+        # Write trade events (map backtest format -> live format)
+        trades = trade_results["trades"]
+        for i, trade in enumerate(trades):
+            if trade["type"] == "buy":
+                # Find corresponding sell to get SL/TP from entry context
+                sl = trade.get("sl")
+                tp = trade.get("tp")
+                logger.log_trade_open(
+                    direction="long",
+                    price=trade["price"],
+                    volume=trade.get("shares", 0),
+                    timestamp=trade["timestamp"],
+                    sl=sl,
+                    tp=tp,
+                )
+            elif trade["type"] == "sell":
+                reason = trade.get("exit_reason", "max_hold")
+                logger.log_trade_close(
+                    direction="long",
+                    price=trade["price"],
+                    volume=trade.get("shares", 0),
+                    pnl=trade.get("pnl", 0),
+                    reason=reason,
+                    timestamp=trade["timestamp"],
+                )
+
+        # Write equity events
+        equity_curve = trade_results["equity_curve"]
+        for eq in equity_curve:
+            logger.log_equity(
+                equity=eq["portfolio_value"],
+                balance=eq["portfolio_value"],
+                timestamp=eq["timestamp"],
+            )
+
+        logger.close()
 
     # ------------------------------------------------------------------
     # Trade simulation
@@ -987,6 +1060,15 @@ class EnsembleSession:
         )
 
         metrics = self._calculate_metrics(trade_results, initial_capital, df)
+
+        # Write JSONL log for analysis
+        ensemble_key = "ensemble_" + "_".join(model_keys)
+        ensemble_name = "Ensemble (" + " + ".join(model_keys) + ")"
+        log_params = dict(params)
+        log_params["model_key"] = log_params.get("model_key", ensemble_key)
+        log_params["model_name"] = log_params.get("model_name", ensemble_name)
+        self._write_backtest_log(signals, trade_results, log_params)
+
         self.results = {
             "params": params,
             "metrics": metrics,
