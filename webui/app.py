@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import json
 import torch
+from model.kronos import set_inference_seed
 import plotly.graph_objects as go
 import plotly.utils
 from flask import Flask, render_template, request, jsonify, Response
@@ -26,7 +27,7 @@ except ImportError:
     print("Warning: Kronos model cannot be imported, will use simulated data for demonstration")
 
 try:
-    from backtest_engine import BacktestSession, CompareSession, create_equity_chart, create_drawdown_chart, create_price_trades_chart
+    from backtest_engine import BacktestSession, CompareSession, EnsembleSession, create_equity_chart, create_drawdown_chart, create_price_trades_chart
     BACKTEST_AVAILABLE = True
 except ImportError:
     BACKTEST_AVAILABLE = False
@@ -455,12 +456,12 @@ def predict():
     try:
         data = request.get_json()
         file_path = data.get('file_path')
-        lookback = int(data.get('lookback', 400))
-        pred_len = int(data.get('pred_len', 120))
-        
+        lookback = int(data.get('lookback', 120))
+        pred_len = int(data.get('pred_len', 1))
+
         # Get prediction quality parameters
-        temperature = float(data.get('temperature', 1.0))
-        top_p = float(data.get('top_p', 0.9))
+        temperature = float(data.get('temperature', 0.1))
+        top_p = float(data.get('top_p', 1.0))
         sample_count = int(data.get('sample_count', 1))
         
         if not file_path:
@@ -477,6 +478,7 @@ def predict():
         # Perform prediction
         if MODEL_AVAILABLE and predictor is not None:
             try:
+                set_inference_seed()
                 # Use real Kronos model
                 # Only use necessary columns: OHLCV, excluding amount
                 required_cols = ['open', 'high', 'low', 'close']
@@ -531,7 +533,8 @@ def predict():
                     pred_len=pred_len,
                     T=temperature,
                     top_p=top_p,
-                    sample_count=sample_count
+                    sample_count=sample_count,
+                    sample_logits=False,
                 )
                 
             except Exception as e:
@@ -798,22 +801,22 @@ def backtest_start():
         return jsonify({'error': error}), 400
 
     params = {
-        'lookback': int(data.get('lookback', 400)),
-        'pred_len': int(data.get('pred_len', 120)),
-        'step_size': int(data.get('step_size', 60)),
-        'signal_threshold': float(data.get('signal_threshold', 0.005)),
-        'exit_threshold': float(data.get('exit_threshold', 0.0025)),
+        'lookback': int(data.get('lookback', 120)),
+        'pred_len': int(data.get('pred_len', 1)),
+        'step_size': int(data.get('step_size', 1)),
+        'signal_threshold': float(data.get('signal_threshold', 0.0003)),
+        'exit_threshold': float(data.get('exit_threshold', 0.0002)),
         'initial_capital': float(data.get('initial_capital', 100000)),
         'commission_per_trade': float(data.get('commission_per_trade', 0.07)),
-        'temperature': float(data.get('temperature', 1.0)),
-        'top_p': float(data.get('top_p', 0.9)),
+        'temperature': float(data.get('temperature', 0.1)),
+        'top_p': float(data.get('top_p', 1.0)),
         'sample_count': int(data.get('sample_count', 1)),
         'start_date': data.get('start_date'),
         'end_date': data.get('end_date'),
         'batch_size': int(data.get('batch_size', 16)),
-        'stop_loss_pct': float(data.get('stop_loss_pct', 0.0)),
-        'take_profit_pct': float(data.get('take_profit_pct', 0.0)),
-        'max_hold_bars': int(data.get('max_hold_bars', 0)),
+        'stop_loss_pct': float(data.get('stop_loss_pct', 0.001)),
+        'take_profit_pct': float(data.get('take_profit_pct', 0.002)),
+        'max_hold_bars': int(data.get('max_hold_bars', 5)),
     }
 
     if len(df) < params['lookback'] + params['pred_len']:

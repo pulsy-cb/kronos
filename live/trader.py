@@ -11,6 +11,7 @@ import time
 import threading
 import traceback
 
+from model.kronos import set_inference_seed
 from data.broker_feed import BrokerFeed, TF_SECONDS
 from live.broker_executor import BrokerExecutor
 from live.config import TradingConfig, DIRECTION_LONG_SHORT, DIRECTION_LONG_ONLY
@@ -20,9 +21,10 @@ from live.logger import SessionLogger
 class LiveTrader:
     """Boucle de trading live connectee a un broker."""
 
-    def __init__(self, config: TradingConfig, predictor, feed: BrokerFeed, executor: BrokerExecutor, logger: SessionLogger = None):
+    def __init__(self, config: TradingConfig, predictor, feed: BrokerFeed, executor: BrokerExecutor, logger: SessionLogger = None, predictor_voter=None):
         self.config = config
         self.predictor = predictor
+        self.predictor_voter = predictor_voter
         self.feed = feed
         self.executor = executor
         self.logger = logger
@@ -177,6 +179,7 @@ class LiveTrader:
                 x_df = df[["open", "high", "low", "close", "volume", "amount"]]
 
                 with torch.inference_mode():
+                    set_inference_seed()
                     pred_df = self.predictor.predict(
                         df=x_df,
                         x_timestamp=x_timestamp,
@@ -185,11 +188,34 @@ class LiveTrader:
                         T=self.config.temperature,
                         top_p=self.config.top_p,
                         sample_count=self.config.sample_count,
+                        sample_logits=False,
                     )
+
+                    # Ensemble voting: if a second predictor is provided, only trade when both agree
+                    if self.predictor_voter is not None:
+                        set_inference_seed()
+                        pred_df_voter = self.predictor_voter.predict(
+                            df=x_df,
+                            x_timestamp=x_timestamp,
+                            y_timestamp=y_timestamp,
+                            pred_len=self.config.pred_len,
+                            T=self.config.temperature,
+                            top_p=self.config.top_p,
+                            sample_count=self.config.sample_count,
+                            sample_logits=False,
+                        )
 
                 current_close = float(df["close"].iloc[-1])
                 predicted_end_close = float(pred_df["close"].iloc[-1])
                 predicted_return = (predicted_end_close - current_close) / current_close
+
+                # Ensemble voting filter
+                if self.predictor_voter is not None:
+                    voter_end_close = float(pred_df_voter["close"].iloc[-1])
+                    voter_return = (voter_end_close - current_close) / current_close
+                    # Only trade when both models agree on direction
+                    if np.sign(predicted_return) != np.sign(voter_return):
+                        predicted_return = 0.0  # Force neutral
 
                 config = self.config
 

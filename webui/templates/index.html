@@ -543,12 +543,12 @@
                     <label for="pred-preset-select">Timeframe Preset:</label>
                     <select id="pred-preset-select">
                         <option value="auto">Auto (detect from data)</option>
-                        <option value="M1">M1 — 1 min (lookback=480, pred=30)</option>
-                        <option value="M5">M5 — 5 min (lookback=400, pred=120)</option>
-                        <option value="M15">M15 — 15 min (lookback=400, pred=120)</option>
-                        <option value="H1">H1 — 1 hour (lookback=400, pred=48)</option>
-                        <option value="H4">H4 — 4 hours (lookback=200, pred=48)</option>
-                        <option value="D1">D1 — 1 day (lookback=200, pred=30)</option>
+                        <option value="M1">M1 — 1 min (scalping: lb=120, pred=1)</option>
+                        <option value="M5">M5 — 5 min (scalping: lb=120, pred=1)</option>
+                        <option value="M15">M15 — 15 min (lb=200, pred=2)</option>
+                        <option value="H1">H1 — 1 hour (lb=200, pred=4)</option>
+                        <option value="H4">H4 — 4 hours (lb=200, pred=4)</option>
+                        <option value="D1">D1 — 1 day (lb=200, pred=5)</option>
                         <option value="custom">Custom</option>
                     </select>
                     <small class="form-text">Adjusts lookback & prediction length for the detected timeframe</small>
@@ -557,29 +557,29 @@
                 <!-- Prediction Parameters -->
                 <div class="form-group">
                     <label for="lookback">Lookback Window Size:</label>
-                    <input type="number" id="lookback" value="400" min="50" max="2048">
-                    <small class="form-text">Historical data points for context — <span id="pred-lookback-info">M5: ~1.4 days</span></small>
+                    <input type="number" id="lookback" value="120" min="10" max="2048">
+                    <small class="form-text">Historical data points for context — <span id="pred-lookback-info">M5: ~1 hour</span></small>
                 </div>
 
                 <div class="form-group">
                     <label for="pred-len">Prediction Length:</label>
-                    <input type="number" id="pred-len" value="120" min="10" max="512">
-                    <small class="form-text">Future steps to predict — <span id="pred-pred-info">M5: ~10 hours</span></small>
+                    <input type="number" id="pred-len" value="1" min="1" max="512">
+                    <small class="form-text">Future steps to predict — <span id="pred-pred-info">M5: ~5 min</span></small>
                 </div>
 
                 <!-- Prediction Quality Parameters -->
                 <div class="form-group">
                     <label for="temperature">Prediction Temperature (T):</label>
-                    <input type="range" id="temperature" value="1.0" min="0.1" max="2.0" step="0.1">
-                    <span id="temperature-value">1.0</span>
-                    <small class="form-text">Controls prediction randomness, higher values make predictions more diverse, lower values make predictions more conservative</small>
+                    <input type="range" id="temperature" value="0.1" min="0.01" max="2.0" step="0.01">
+                    <span id="temperature-value">0.1</span>
+                    <small class="form-text">Controls prediction randomness, lower = more deterministic (0.1 recommended for scalping)</small>
                 </div>
 
                 <div class="form-group">
                     <label for="top-p">Nucleus Sampling Parameter (top_p):</label>
-                    <input type="range" id="top-p" value="0.9" min="0.1" max="1.0" step="0.1">
-                    <span id="top-p-value">0.9</span>
-                    <small class="form-text">Controls prediction diversity, higher values consider broader probability distributions</small>
+                    <input type="range" id="top-p" value="1.0" min="0.1" max="1.0" step="0.05">
+                    <span id="top-p-value">1.0</span>
+                    <small class="form-text">1.0 = no filtering (recommended for deterministic predictions)</small>
                 </div>
 
                 <div class="form-group">
@@ -659,12 +659,12 @@
     <script>
         // Preset configurations for prediction page
         const PRED_PRESETS = {
-            'M1':  { lookback: 480, pred_len: 30,  lb_hint: '~8 hours',  pred_hint: '~30 min' },
-            'M5':  { lookback: 400, pred_len: 120, lb_hint: '~1.4 days', pred_hint: '~10 hours' },
-            'M15': { lookback: 400, pred_len: 120, lb_hint: '~4 days',   pred_hint: '~30 hours' },
-            'H1':  { lookback: 400, pred_len: 48,  lb_hint: '~16 days',  pred_hint: '~2 days' },
-            'H4':  { lookback: 200, pred_len: 48,  lb_hint: '~33 days',  pred_hint: '~8 days' },
-            'D1':  { lookback: 200, pred_len: 30,  lb_hint: '~200 days', pred_hint: '~30 days' },
+            'M1':  { lookback: 120, pred_len: 1,  lb_hint: '~2 hours',  pred_hint: '~1 min' },
+            'M5':  { lookback: 120, pred_len: 1,  lb_hint: '~10 hours', pred_hint: '~5 min' },
+            'M15': { lookback: 200, pred_len: 2,  lb_hint: '~2 days',   pred_hint: '~30 min' },
+            'H1':  { lookback: 200, pred_len: 4,  lb_hint: '~8 days',   pred_hint: '~4 hours' },
+            'H4':  { lookback: 200, pred_len: 4,  lb_hint: '~33 days',  pred_hint: '~16 hours' },
+            'D1':  { lookback: 200, pred_len: 5,  lb_hint: '~200 days', pred_hint: '~5 days' },
         };
 
         function detectTimeframe(timeframeStr) {
@@ -1047,21 +1047,21 @@
             document.getElementById('window-end').textContent = `End: ${endDate.toLocaleDateString()}`;
             
             // Display fixed window size
-            document.getElementById('window-size').textContent = `Window Size: 400 + 120 = 520 data points (fixed)`;
-            
+            document.getElementById('window-size').textContent = `Window Size: 120 + 1 = 121 data points (fixed)`;
+
             // Input field values remain fixed
-            document.getElementById('lookback').value = 400;
-            document.getElementById('pred-len').value = 120;
+            document.getElementById('lookback').value = 120;
+            document.getElementById('pred-len').value = 1;
         }
 
         // Update slider based on input fields
         function updateSliderFromInputs() {
             if (!sliderData) return;
             
-            // Fixed window size: 400 + 120 = 520 data points
-            const lookback = 400;
-            const predLen = 120;
-            const windowSize = lookback + predLen; // Fixed at 520
+            // Fixed window size: 120 + 1 = 121 data points
+            const lookback = 120;
+            const predLen = 1;
+            const windowSize = lookback + predLen; // Fixed at 121
             
             // Calculate slider position
             const totalRows = sliderData.totalRows;

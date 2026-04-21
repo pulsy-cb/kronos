@@ -24,6 +24,7 @@ from pathlib import Path
 import torch
 import pandas as pd
 import numpy as np
+import random
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -75,14 +76,14 @@ TF_SECONDS = {
 
 PRESETS = {
     "M1": {
-        "lookback": 120, "pred_len": 5, "signal_threshold": 0.0008,
-        "exit_threshold": 0.0005, "stop_loss_pct": 0.0025,
-        "take_profit_pct": 0.005, "max_hold_bars": 120,
+        "lookback": 120, "pred_len": 1, "signal_threshold": 0.0003,
+        "exit_threshold": 0.0002, "stop_loss_pct": 0.001,
+        "take_profit_pct": 0.002, "max_hold_bars": 5,
     },
     "M5": {
-        "lookback": 120, "pred_len": 4, "signal_threshold": 0.0012,
-        "exit_threshold": 0.0007, "stop_loss_pct": 0.0035,
-        "take_profit_pct": 0.007, "max_hold_bars": 144,
+        "lookback": 120, "pred_len": 1, "signal_threshold": 0.0003,
+        "exit_threshold": 0.0002, "stop_loss_pct": 0.001,
+        "take_profit_pct": 0.002, "max_hold_bars": 5,
     },
 }
 
@@ -716,7 +717,7 @@ def load_kronos(model_key, device=None):
     return predictor
 
 
-def predict_direction(predictor, df, lookback, pred_len, timeframe_secs, sample_count=5):
+def predict_direction(predictor, df, lookback, pred_len, timeframe_secs, sample_count=1):
     """
     Run Kronos prediction and return (direction, current_price, predicted_price, pred_df_or_error).
 
@@ -725,6 +726,9 @@ def predict_direction(predictor, df, lookback, pred_len, timeframe_secs, sample_
     """
     if len(df) < lookback:
         return None, None, None, None, "Not enough data"
+
+    from model.kronos import set_inference_seed
+    set_inference_seed()
 
     x_df = df.iloc[-lookback:][["open", "high", "low", "close", "volume", "amount"]].copy()
     x_timestamp = df.iloc[-lookback:]["timestamps"]
@@ -749,9 +753,10 @@ def predict_direction(predictor, df, lookback, pred_len, timeframe_secs, sample_
             x_timestamp=x_timestamp,
             y_timestamp=future_times,
             pred_len=pred_len,
-            T=1.0,
-            top_p=0.9,
-            sample_count=sample_count,
+            T=0.1,
+            top_p=1.0,
+            sample_count=1,
+            sample_logits=False,
             verbose=False,
         )
     except Exception as e:
@@ -800,6 +805,19 @@ def run_polymarket_loop(args):
     logger.info("Loading Kronos model...")
     predictor = load_kronos(args.model, device=args.device)
     logger.info("Model loaded.")
+
+    # Load ensemble voter model if available (xaumodel-local + xaumodel-mini)
+    predictor_voter = None
+    voter_key = None
+    if args.model == "xaumodel-local" and "xaumodel-mini" in AVAILABLE_MODELS:
+        voter_key = "xaumodel-mini"
+    elif args.model == "xaumodel-mini" and "xaumodel-local" in AVAILABLE_MODELS:
+        voter_key = "xaumodel-local"
+
+    if voter_key:
+        logger.info(f"Loading ensemble voter model: {voter_key}...")
+        predictor_voter = load_kronos(voter_key, device=args.device)
+        logger.info("Voter model loaded. Ensemble voting enabled.")
 
     # Init feed + tracker
     feed = BinancePublicFeed()
@@ -875,6 +893,17 @@ def run_polymarket_loop(args):
                 logger.warning(f"Prediction failed: {pred_err}")
                 time.sleep(60)
                 continue
+
+            # Ensemble voting: check voter model and override if disagreement
+            if predictor_voter is not None and direction != "FLAT":
+                voter_direction, _, voter_pred_price, _, voter_err = predict_direction(
+                    predictor_voter, df, lookback, pred_len, tf_secs, sample_count=1
+                )
+                if voter_err is None and voter_direction != direction:
+                    logger.info(f"  VOTE DISAGREE | Main: {direction} | Voter: {voter_direction} -> FLAT")
+                    direction = "FLAT"
+                elif voter_err is None:
+                    logger.info(f"  VOTE CONFIRM  | Both models: {direction}")
 
             pred_return = (pred_price - cur_price) / cur_price if cur_price else 0
             logger.info(

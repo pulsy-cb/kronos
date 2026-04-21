@@ -19,64 +19,64 @@ BROKER_BINANCE = "binance"
 
 PRESETS = {
     "M1": {
-        "lookback": 480,
-        "pred_len": 30,
-        "step_size": 30,
-        "signal_threshold": 0.0008,
-        "exit_threshold": 0.0005,
-        "stop_loss_pct": 0.0025,
-        "take_profit_pct": 0.005,
-        "max_hold_bars": 120,
+        "lookback": 120,
+        "pred_len": 1,
+        "step_size": 1,
+        "signal_threshold": 0.0003,
+        "exit_threshold": 0.0002,
+        "stop_loss_pct": 0.001,
+        "take_profit_pct": 0.002,
+        "max_hold_bars": 5,
     },
     "M5": {
-        "lookback": 400,
-        "pred_len": 120,
-        "step_size": 60,
-        "signal_threshold": 0.0012,
-        "exit_threshold": 0.0007,
-        "stop_loss_pct": 0.0035,
-        "take_profit_pct": 0.007,
-        "max_hold_bars": 144,
+        "lookback": 120,
+        "pred_len": 1,
+        "step_size": 1,
+        "signal_threshold": 0.0003,
+        "exit_threshold": 0.0002,
+        "stop_loss_pct": 0.001,
+        "take_profit_pct": 0.002,
+        "max_hold_bars": 5,
     },
     "M15": {
-        "lookback": 400,
-        "pred_len": 120,
-        "step_size": 60,
-        "signal_threshold": 0.002,
-        "exit_threshold": 0.0012,
-        "stop_loss_pct": 0.005,
-        "take_profit_pct": 0.01,
-        "max_hold_bars": 64,
+        "lookback": 200,
+        "pred_len": 2,
+        "step_size": 2,
+        "signal_threshold": 0.001,
+        "exit_threshold": 0.0005,
+        "stop_loss_pct": 0.003,
+        "take_profit_pct": 0.006,
+        "max_hold_bars": 20,
     },
     "H1": {
-        "lookback": 400,
-        "pred_len": 48,
-        "step_size": 24,
-        "signal_threshold": 0.003,
-        "exit_threshold": 0.0015,
-        "stop_loss_pct": 0.008,
-        "take_profit_pct": 0.015,
-        "max_hold_bars": 48,
+        "lookback": 200,
+        "pred_len": 4,
+        "step_size": 4,
+        "signal_threshold": 0.002,
+        "exit_threshold": 0.001,
+        "stop_loss_pct": 0.005,
+        "take_profit_pct": 0.01,
+        "max_hold_bars": 24,
     },
     "H4": {
         "lookback": 200,
-        "pred_len": 48,
-        "step_size": 24,
-        "signal_threshold": 0.005,
-        "exit_threshold": 0.0025,
-        "stop_loss_pct": 0.012,
-        "take_profit_pct": 0.025,
-        "max_hold_bars": 24,
+        "pred_len": 4,
+        "step_size": 4,
+        "signal_threshold": 0.004,
+        "exit_threshold": 0.002,
+        "stop_loss_pct": 0.008,
+        "take_profit_pct": 0.016,
+        "max_hold_bars": 12,
     },
     "D1": {
         "lookback": 200,
-        "pred_len": 30,
-        "step_size": 10,
-        "signal_threshold": 0.01,
-        "exit_threshold": 0.005,
-        "stop_loss_pct": 0.02,
-        "take_profit_pct": 0.04,
-        "max_hold_bars": 15,
+        "pred_len": 5,
+        "step_size": 5,
+        "signal_threshold": 0.008,
+        "exit_threshold": 0.004,
+        "stop_loss_pct": 0.015,
+        "take_profit_pct": 0.03,
+        "max_hold_bars": 10,
     },
 }
 
@@ -94,20 +94,20 @@ class TradingConfig:
     broker: str = BROKER_MT5
 
     # Prediction parameters
-    lookback: int = 400
-    pred_len: int = 120
-    temperature: float = 1.0
-    top_p: float = 0.9
+    lookback: int = 120
+    pred_len: int = 1
+    temperature: float = 0.1
+    top_p: float = 1.0
     sample_count: int = 1
 
     # Signal thresholds
-    signal_threshold: float = 0.0012
-    exit_threshold: float = 0.0007
+    signal_threshold: float = 0.0003
+    exit_threshold: float = 0.0002
 
     # Risk management
-    stop_loss_pct: float = 0.0035
-    take_profit_pct: float = 0.007
-    max_hold_bars: int = 144
+    stop_loss_pct: float = 0.001
+    take_profit_pct: float = 0.002
+    max_hold_bars: int = 5
     direction: str = DIRECTION_LONG_SHORT
 
     # Position sizing
