@@ -16,6 +16,7 @@ from data.broker_feed import BrokerFeed, TF_SECONDS
 from live.broker_executor import BrokerExecutor
 from live.config import TradingConfig, DIRECTION_LONG_SHORT, DIRECTION_LONG_ONLY
 from live.logger import SessionLogger
+from webui.time_filter import is_trading_allowed
 
 
 class LiveTrader:
@@ -56,6 +57,10 @@ class LiveTrader:
         self.total_trades = 0
         self.winning_trades = 0
         self.total_pnl = 0.0
+
+        # Daily profit cap tracking
+        self.daily_pnl = 0.0
+        self.daily_pnl_date = None
 
     def start(self):
         if self.running:
@@ -242,6 +247,12 @@ class LiveTrader:
                     else:
                         signal = "neutral"
 
+                # Time filter: force neutral if outside allowed hours
+                if config.enable_time_filter and signal in ("long", "short"):
+                    bar_ts = new_bar_time.isoformat() if hasattr(new_bar_time, "isoformat") else str(new_bar_time)
+                    if not is_trading_allowed(bar_ts, config.symbol):
+                        signal = "neutral"
+
                 self.last_signal = {
                     "timestamp": datetime.now().isoformat(),
                     "signal": signal,
@@ -297,6 +308,20 @@ class LiveTrader:
                 self._close_position("reverse")
 
         if signal in ("long", "short") and self.current_position is None:
+            # Check daily profit cap before opening
+            if config.daily_profit_cap > 0:
+                today = datetime.now().date()
+                if self.daily_pnl_date != today:
+                    self.daily_pnl_date = today
+                    self.daily_pnl = 0.0
+                # Get current balance for percentage calculation
+                acct = self.feed.get_account_info()
+                balance = acct["balance"] if acct else 10000
+                daily_return_pct = self.daily_pnl / balance if balance > 0 else 0
+                if daily_return_pct >= config.daily_profit_cap:
+                    self.error_message = f"Daily profit cap atteint: {daily_return_pct*100:.2f}% >= {config.daily_profit_cap*100:.2f}%"
+                    return
+
             self._open_position(signal, current_close, predicted_return)
 
     def _open_position(self, direction, current_price, predicted_return=0.0):
@@ -382,6 +407,13 @@ class LiveTrader:
             if pnl > 0:
                 self.winning_trades += 1
             self.total_pnl += pnl
+
+            # Update daily PnL tracking
+            today = datetime.now().date()
+            if self.daily_pnl_date != today:
+                self.daily_pnl_date = today
+                self.daily_pnl = 0.0
+            self.daily_pnl += pnl
 
             self.trade_log.append({
                 "type": "close",

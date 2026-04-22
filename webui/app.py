@@ -931,6 +931,20 @@ def backtest_cancel():
     return jsonify({'status': 'cancelling'})
 
 
+@app.route('/api/ensemble/cancel', methods=['POST'])
+def ensemble_cancel():
+    """Cancel a running ensemble backtest."""
+    data = request.get_json()
+    session_id = data.get('session_id')
+    session = ensemble_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    session.cancel()
+    return jsonify({'status': 'cancelling'})
+
+
 # ======================================================================
 # Compare Routes
 # ======================================================================
@@ -944,6 +958,7 @@ def compare_page():
 # Global stores for compare sessions and loaded predictors
 compare_sessions = {}
 compare_predictors = {}
+ensemble_sessions = {}
 
 # Live trading manager
 if LIVE_AVAILABLE:
@@ -1083,6 +1098,132 @@ def compare_results():
         return jsonify({'error': f'Session not completed yet. Status: {session.status}'}), 400
 
     return jsonify(session.results)
+
+
+# ======================================================================
+# Ensemble Backtest Routes
+# ======================================================================\n
+@app.route('/api/ensemble/load-model', methods=['POST'])
+def ensemble_load_model():
+    """Load a model into the ensemble pool (reuses compare_predictors store)."""
+    return compare_load_model()
+
+@app.route('/api/ensemble/run', methods=['POST'])
+def ensemble_run():
+    """Start an ensemble backtest session."""
+    global ensemble_sessions, compare_predictors
+
+    if not BACKTEST_AVAILABLE:
+        return jsonify({'error': 'Backtest engine not available'}), 400
+
+    data = request.get_json()
+    model_keys = data.get('models', [])
+    params = data.get('params', {})
+    strict_consensus = data.get('strict_consensus', False)
+    params['strict_consensus'] = strict_consensus
+
+    if len(model_keys) != 2:
+        return jsonify({'error': 'Exactly 2 models are required for ensemble'}), 400
+
+    for mk in model_keys:
+        if mk not in compare_predictors:
+            return jsonify({'error': f'Model {mk} is not loaded'}), 400
+
+    file_path = params.get('file_path')
+    if not file_path:
+        return jsonify({'error': 'File path is required'}), 400
+
+    df, error = load_data_file(file_path)
+    if error:
+        return jsonify({'error': error}), 400
+
+    required_data = params.get('lookback', 400) + params.get('pred_len', 120)
+    if len(df) < required_data:
+        return jsonify({'error': f'Insufficient data: need {required_data}, got {len(df)}'}), 400
+
+    # Enrich params with symbol/timeframe/log_dir for JSONL logging
+    if BACKTEST_LOGGER_AVAILABLE:
+        params['symbol'] = detect_symbol_from_path(file_path)
+        params['timeframe'] = detect_timeframe_from_path(file_path)
+        params['log_dir'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+
+    now = datetime.datetime.now()
+    expired = [sid for sid, sess in ensemble_sessions.items()
+               if hasattr(sess, 'created_at') and (now - sess.created_at).total_seconds() > 7200]
+    for sid in expired:
+        del ensemble_sessions[sid]
+
+    session_id = str(uuid.uuid4())
+    predictors = {mk: compare_predictors[mk]['predictor'] for mk in model_keys}
+    session = EnsembleSession(df, predictors, params)
+    session.created_at = now
+    ensemble_sessions[session_id] = session
+
+    thread = threading.Thread(target=session.run, daemon=True)
+    thread.start()
+
+    return jsonify({'session_id': session_id, 'status': 'started'})
+
+@app.route('/api/ensemble/progress')
+def ensemble_progress():
+    """Get progress of a running ensemble session."""
+    session_id = request.args.get('session_id')
+    session = ensemble_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    return jsonify({
+        'status': session.status,
+        'progress': session.progress,
+        'current_step': session.current_step,
+        'total_steps': session.total_steps,
+    })
+
+@app.route('/api/ensemble/results')
+def ensemble_results():
+    """Get results of a completed ensemble session."""
+    session_id = request.args.get('session_id')
+    session = ensemble_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    if session.status != 'completed':
+        return jsonify({'error': f'Session not completed yet. Status: {session.status}'}), 400
+
+    results = session.results
+    charts = {
+        'equity_curve': create_equity_chart(results),
+        'drawdown': create_drawdown_chart(results),
+        'price_trades': create_price_trades_chart(results),
+    }
+    trades_json = []
+    for t in results['trades']:
+        trade = {
+            'type': t['type'],
+            'timestamp': t['timestamp'],
+            'price': t['price'],
+            'shares': t['shares'],
+        }
+        if t['type'] == 'sell':
+            trade['pnl'] = t['pnl']
+            trade['return_pct'] = t['return_pct']
+            trade['entry_price'] = t.get('entry_price')
+            trade['entry_time'] = t.get('entry_time')
+            trade['exit_reason'] = t.get('exit_reason', 'signal')
+        trades_json.append(trade)
+
+    resp = {
+        'metrics': results['metrics'],
+        'charts': charts,
+        'trades': trades_json,
+    }
+    if 'consensus_metrics' in results:
+        resp['consensus_metrics'] = results['consensus_metrics']
+    if 'ensemble_models' in results:
+        resp['ensemble_models'] = results['ensemble_models']
+    return jsonify(resp)
 
 
 # ======================================================================

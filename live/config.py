@@ -119,6 +119,12 @@ class TradingConfig:
     # Commission
     commission_per_trade: float = 0.07
 
+    # Time filter
+    enable_time_filter: bool = False
+
+    # Daily profit cap (% of balance, 0 = no cap)
+    daily_profit_cap: float = 0.0
+
     # MT5 connection
     mt5_login: Optional[int] = None
     mt5_password: Optional[str] = None

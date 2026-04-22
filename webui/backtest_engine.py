@@ -11,6 +11,7 @@ import plotly.utils
 
 from model.kronos import set_inference_seed
 from backtest_logger import BacktestLogger, extract_date_from_signals
+from time_filter import is_trading_allowed
 
 
 class BacktestSession:
@@ -276,6 +277,9 @@ class BacktestSession:
         # ---------------------------------------------------------------
         signals = []
 
+        symbol = params.get("symbol", "XAUUSD")
+        enable_time_filter = params.get("enable_time_filter", False)
+
         for step_i in range(total_windows):
             pred_df = all_predictions[step_i]
             current_close = all_current_closes[step_i]
@@ -289,6 +293,12 @@ class BacktestSession:
                 signal_type = "exit"
             else:
                 signal_type = "neutral"
+
+            # Time filter: force neutral if outside allowed hours
+            if enable_time_filter and signal_type in ("long", "short"):
+                ts_str = current_timestamp.isoformat() if hasattr(current_timestamp, "isoformat") else str(current_timestamp)
+                if not is_trading_allowed(ts_str, symbol):
+                    signal_type = "neutral"
 
             signals.append(
                 {
@@ -305,7 +315,7 @@ class BacktestSession:
             )
 
         # Simulate trades
-        trade_results = self._simulate_trades(
+        trade_results = _simulate_trades(
             df, signals, initial_capital,
             commission_per_trade=params.get("commission_per_trade", 0.07),
             stop_loss_pct=params.get("stop_loss_pct", 0.0),
@@ -314,12 +324,12 @@ class BacktestSession:
         )
 
         # Calculate metrics
-        metrics = self._calculate_metrics(
+        metrics = _calculate_metrics(
             trade_results, initial_capital, df
         )
 
         # --- Write JSONL log for analysis ---
-        self._write_backtest_log(signals, trade_results, params)
+        write_backtest_log(signals, trade_results, params)
 
         self.results = {
             "params": params,
@@ -329,83 +339,87 @@ class BacktestSession:
             "drawdown_series": trade_results["drawdown_series"],
             "signals": signals,
             "trades": trade_results["trades"],
-            "price_data": self._prepare_price_data(df),
+            "price_data": _prepare_price_data(df),
         }
 
     # ------------------------------------------------------------------
     # JSONL logging for analysis scripts
     # ------------------------------------------------------------------
 
-    def _write_backtest_log(self, signals, trade_results, params):
-        """Write backtest results to JSONL log file (same format as live logs)."""
-        model_key = params.get("model_key", "unknown")
-        model_name = params.get("model_name", model_key)
-        symbol = params.get("symbol", "?")
-        timeframe = params.get("timeframe", "?")
+# ------------------------------------------------------------------
+# JSONL logging (shared between BacktestSession and EnsembleSession)
+# ------------------------------------------------------------------
 
-        logger = BacktestLogger(
-            model_key=model_key,
-            model_name=model_name,
-            symbol=symbol,
-            timeframe=timeframe,
-            log_dir=params.get("log_dir", "logs"),
+def write_backtest_log(signals, trade_results, params):
+    """Write backtest results to JSONL log file (same format as live logs)."""
+    model_key = params.get("model_key", "unknown")
+    model_name = params.get("model_name", model_key)
+    symbol = params.get("symbol", "?")
+    timeframe = params.get("timeframe", "?")
+
+    logger = BacktestLogger(
+        model_key=model_key,
+        model_name=model_name,
+        symbol=symbol,
+        timeframe=timeframe,
+        log_dir=params.get("log_dir", "logs"),
+    )
+
+    date_str = extract_date_from_signals(signals)
+    logger.open(date_str)
+
+    # Write signal events
+    for s in signals:
+        logger.log_signal(
+            signal=s["signal"],
+            predicted_return=s["predicted_return"],
+            predicted_close=s["predicted_close"],
+            current_close=s["current_close"],
+            timestamp=s["timestamp"],
         )
 
-        date_str = extract_date_from_signals(signals)
-        logger.open(date_str)
-
-        # Write signal events
-        for s in signals:
-            logger.log_signal(
-                signal=s["signal"],
-                predicted_return=s["predicted_return"],
-                predicted_close=s["predicted_close"],
-                current_close=s["current_close"],
-                timestamp=s["timestamp"],
+    # Write trade events (map backtest format -> live format)
+    trades = trade_results["trades"]
+    for i, trade in enumerate(trades):
+        if trade["type"] == "buy":
+            sl = trade.get("sl")
+            tp = trade.get("tp")
+            logger.log_trade_open(
+                direction="long",
+                price=trade["price"],
+                volume=trade.get("shares", 0),
+                timestamp=trade["timestamp"],
+                sl=sl,
+                tp=tp,
+            )
+        elif trade["type"] == "sell":
+            reason = trade.get("exit_reason", "max_hold")
+            logger.log_trade_close(
+                direction="long",
+                price=trade["price"],
+                volume=trade.get("shares", 0),
+                pnl=trade.get("pnl", 0),
+                reason=reason,
+                timestamp=trade["timestamp"],
             )
 
-        # Write trade events (map backtest format -> live format)
-        trades = trade_results["trades"]
-        for i, trade in enumerate(trades):
-            if trade["type"] == "buy":
-                # Find corresponding sell to get SL/TP from entry context
-                sl = trade.get("sl")
-                tp = trade.get("tp")
-                logger.log_trade_open(
-                    direction="long",
-                    price=trade["price"],
-                    volume=trade.get("shares", 0),
-                    timestamp=trade["timestamp"],
-                    sl=sl,
-                    tp=tp,
-                )
-            elif trade["type"] == "sell":
-                reason = trade.get("exit_reason", "max_hold")
-                logger.log_trade_close(
-                    direction="long",
-                    price=trade["price"],
-                    volume=trade.get("shares", 0),
-                    pnl=trade.get("pnl", 0),
-                    reason=reason,
-                    timestamp=trade["timestamp"],
-                )
+    # Write equity events
+    equity_curve = trade_results["equity_curve"]
+    for eq in equity_curve:
+        logger.log_equity(
+            equity=eq["portfolio_value"],
+            balance=eq["portfolio_value"],
+            timestamp=eq["timestamp"],
+        )
 
-        # Write equity events
-        equity_curve = trade_results["equity_curve"]
-        for eq in equity_curve:
-            logger.log_equity(
-                equity=eq["portfolio_value"],
-                balance=eq["portfolio_value"],
-                timestamp=eq["timestamp"],
-            )
+    logger.close()
 
-        logger.close()
 
-    # ------------------------------------------------------------------
-    # Trade simulation
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Trade simulation
+# ------------------------------------------------------------------
 
-    def _simulate_trades(self, df, signals, initial_capital, commission_per_trade=0.07,
+def _simulate_trades(df, signals, initial_capital, commission_per_trade=0.07,
                           stop_loss_pct=0.0, take_profit_pct=0.0, max_hold_bars=0):
         # commission_per_trade = total round-trip commission (split 50/50 on buy/sell)
         commission_per_side = commission_per_trade / 2.0
@@ -561,11 +575,11 @@ class BacktestSession:
             "trades": trades,
         }
 
-    # ------------------------------------------------------------------
-    # Metrics
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Metrics
+# ------------------------------------------------------------------
 
-    def _calculate_metrics(self, trade_results, initial_capital, df):
+def _calculate_metrics(trade_results, initial_capital, df):
         equity = trade_results["equity_curve"]
         trades = trade_results["trades"]
         drawdown = trade_results["drawdown_series"]
@@ -625,11 +639,11 @@ class BacktestSession:
             "avg_trade_return_pct": round(avg_trade_return * 100, 2),
         }
 
-    # ------------------------------------------------------------------
-    # Price data for chart
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Price data for chart
+# ------------------------------------------------------------------
 
-    def _prepare_price_data(self, df):
+def _prepare_price_data(df):
         data = []
         for _, row in df.iterrows():
             ts = row["timestamps"]
@@ -1024,11 +1038,19 @@ class EnsembleSession:
             pred_return_a = (float(pred_a["close"].iloc[-1]) - current_close) / current_close
             pred_return_b = (float(pred_b["close"].iloc[-1]) - current_close) / current_close
 
-            # Only trade when both models agree on direction
-            if np.sign(pred_return_a) == np.sign(pred_return_b):
-                avg_return = (pred_return_a + pred_return_b) / 2.0
+            strict = params.get("strict_consensus", False)
+            if strict:
+                if pred_return_a > signal_threshold and pred_return_b > signal_threshold:
+                    avg_return = (pred_return_a + pred_return_b) / 2.0
+                elif pred_return_a < -exit_threshold and pred_return_b < -exit_threshold:
+                    avg_return = (pred_return_a + pred_return_b) / 2.0
+                else:
+                    avg_return = 0.0
             else:
-                avg_return = 0.0  # Disagreement -> neutral
+                if np.sign(pred_return_a) == np.sign(pred_return_b):
+                    avg_return = (pred_return_a + pred_return_b) / 2.0
+                else:
+                    avg_return = 0.0
 
             current_timestamp = df.iloc[idx + lookback - 1]["timestamps"]
             if avg_return > signal_threshold:
@@ -1037,6 +1059,14 @@ class EnsembleSession:
                 signal_type = "exit"
             else:
                 signal_type = "neutral"
+
+            # Time filter: force neutral if outside allowed hours
+            symbol = params.get("symbol", "XAUUSD")
+            enable_time_filter = params.get("enable_time_filter", False)
+            if enable_time_filter and signal_type in ("long", "short"):
+                ts_str = current_timestamp.isoformat() if hasattr(current_timestamp, "isoformat") else str(current_timestamp)
+                if not is_trading_allowed(ts_str, symbol):
+                    signal_type = "neutral"
 
             signals.append({
                 "timestamp": current_timestamp.isoformat() if hasattr(current_timestamp, "isoformat") else str(current_timestamp),
@@ -1067,7 +1097,35 @@ class EnsembleSession:
         log_params = dict(params)
         log_params["model_key"] = log_params.get("model_key", ensemble_key)
         log_params["model_name"] = log_params.get("model_name", ensemble_name)
-        self._write_backtest_log(signals, trade_results, log_params)
+        write_backtest_log(signals, trade_results, log_params)
+
+        # Consensus metrics
+        signal_threshold = params.get("signal_threshold", 0.0)
+        exit_threshold = params.get("exit_threshold", signal_threshold)
+        consensus_counts = {"both_long": 0, "both_short": 0, "both_neutral": 0, "disagree_dir": 0, "one_active": 0}
+        for s in signals:
+            ra = s.get("return_a", 0.0)
+            rb = s.get("return_b", 0.0)
+            if ra > signal_threshold and rb > signal_threshold:
+                consensus_counts["both_long"] += 1
+            elif ra < -exit_threshold and rb < -exit_threshold:
+                consensus_counts["both_short"] += 1
+            elif abs(ra) <= signal_threshold and abs(rb) <= exit_threshold:
+                consensus_counts["both_neutral"] += 1
+            elif np.sign(ra) != np.sign(rb):
+                consensus_counts["disagree_dir"] += 1
+            else:
+                consensus_counts["one_active"] += 1
+        consensus_trades = [t for t in trade_results["trades"] if t.get("type") == "sell"]
+        consensus_pnl = sum(t.get("pnl", 0.0) for t in consensus_trades)
+        consensus_wins = sum(1 for t in consensus_trades if t.get("pnl", 0.0) > 0)
+        consensus_wr = (consensus_wins / len(consensus_trades) * 100.0) if consensus_trades else 0.0
+        consensus_metrics = {
+            "signal_counts": consensus_counts,
+            "trade_count": len(consensus_trades),
+            "win_rate": round(consensus_wr, 2),
+            "pnl": round(consensus_pnl, 2),
+        }
 
         self.results = {
             "params": params,
@@ -1079,6 +1137,7 @@ class EnsembleSession:
             "trades": trade_results["trades"],
             "price_data": self._prepare_price_data(df),
             "ensemble_models": model_keys,
+            "consensus_metrics": consensus_metrics,
         }
 
     def _simulate_trades(self, df, signals, initial_capital, commission_per_trade=0.07,

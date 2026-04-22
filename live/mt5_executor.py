@@ -8,6 +8,7 @@ from datetime import datetime
 import time
 
 from live.broker_executor import BrokerExecutor
+from data.mt5_feed import resolve_mt5_symbol
 
 
 class MT5Executor(BrokerExecutor):
@@ -25,6 +26,7 @@ class MT5Executor(BrokerExecutor):
         if direction not in ("long", "short"):
             return False, f"Direction invalide: {direction}"
 
+        symbol = resolve_mt5_symbol(symbol)
         order_type = mt5.ORDER_TYPE_BUY if direction == "long" else mt5.ORDER_TYPE_SELL
 
         tick = mt5.symbol_info_tick(symbol)
@@ -82,15 +84,16 @@ class MT5Executor(BrokerExecutor):
             return False, f"Position {ticket} introuvable"
 
         pos = position[0]
-        tick = mt5.symbol_info_tick(pos.symbol)
+        symbol = resolve_mt5_symbol(pos.symbol)
+        tick = mt5.symbol_info_tick(symbol)
         if tick is None:
-            return False, f"Impossible d'obtenir le tick pour {pos.symbol}"
+            return False, f"Impossible d'obtenir le tick pour {symbol}"
 
         close_price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": pos.symbol,
+            "symbol": symbol,
             "volume": pos.volume,
             "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
             "position": pos.ticket,
@@ -120,6 +123,7 @@ class MT5Executor(BrokerExecutor):
     def close_all_positions(self, symbol=None):
         """Ferme toutes les positions ouvertes, optionnellement filtrees par symbole."""
         if symbol:
+            symbol = resolve_mt5_symbol(symbol)
             positions = mt5.positions_get(symbol=symbol)
         else:
             positions = mt5.positions_get()
@@ -144,6 +148,7 @@ class MT5Executor(BrokerExecutor):
         risk_pct: pourcentage du capital a risquer (ex: 0.01 = 1%)
         sl_distance: distance au stop-loss en prix (ex: 5.0 pour $5 de SL)
         """
+        symbol = resolve_mt5_symbol(symbol)
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             return 0.0
@@ -176,6 +181,7 @@ class MT5Executor(BrokerExecutor):
             tp_price = entry_price * (1 - tp_pct) if tp_pct > 0 else None
 
         if symbol:
+            symbol = resolve_mt5_symbol(symbol)
             symbol_info = mt5.symbol_info(symbol)
             if symbol_info:
                 digits = symbol_info.digits
