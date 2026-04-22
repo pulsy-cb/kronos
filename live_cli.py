@@ -325,8 +325,10 @@ class Polymarket5MinTracker:
         "ETHUSDT": "eth",
     }
 
-    def __init__(self, bet_amount=1.0):
+    def __init__(self, bet_amount=1.0, feed=None, logger=None):
         self.bet_amount = bet_amount
+        self.feed = feed
+        self.logger = logger
         self.positions = []       # Open bets (waiting for 5-min window to close)
         self.results = []         # Settled bets with P&L
         self.total_wagered = 0.0
@@ -364,13 +366,19 @@ class Polymarket5MinTracker:
         Retourne dict avec yes_price, no_price, question, token_ids, ou None si pas trouvé.
         """
         slug = self._build_slug(symbol, window_ts)
+        if self.logger:
+            self.logger.debug(f"[PM] Fetching market | slug={slug} | symbol={symbol} | window_ts={window_ts}")
 
         # Check cache
         if slug in self._slug_cache:
+            if self.logger:
+                self.logger.debug(f"[PM] Cache hit | slug={slug}")
             return self._slug_cache[slug]
 
         # Skip known failures
         if slug in self._failed_slugs:
+            if self.logger:
+                self.logger.debug(f"[PM] Skipping known failed slug | slug={slug}")
             return None
 
         try:
@@ -479,13 +487,24 @@ class Polymarket5MinTracker:
 
             # Still missing? Mark as failure
             if market_info["up_price"] is None or market_info["down_price"] is None:
+                if self.logger:
+                    self.logger.warning(f"[PM] Missing prices after all attempts | slug={slug}")
                 self._failed_slugs.add(slug)
                 return None
 
             self._slug_cache[slug] = market_info
+            if self.logger:
+                self.logger.info(
+                    f"[PM] Market found | slug={slug} | "
+                    f"up_price={market_info['up_price']:.4f} | "
+                    f"down_price={market_info['down_price']:.4f} | "
+                    f"volume={market_info['volume']:.2f}"
+                )
             return market_info
 
-        except Exception:
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"[PM] Exception fetching market | slug={slug} | error={e}")
             self._failed_slugs.add(slug)
             return None
 
@@ -500,10 +519,32 @@ class Polymarket5MinTracker:
                 timeout=5,
             )
             if resp.status_code == 200:
-                return float(resp.json().get("price", 0))
+                price = float(resp.json().get("price", 0))
+                if self.logger:
+                    self.logger.debug(f"[PM] CLOB price | token={token_id[:16]}... | price={price:.4f}")
+                return price
         except Exception:
             pass
         return None
+
+    def _get_m5_candle(self, symbol, window_ts):
+        """
+        Récupère la candle M5 exacte pour le timestamp de début de fenêtre.
+        Retourne (open_price, close_price) ou (None, None) si non trouvé.
+        """
+        if self.feed is None:
+            return None, None
+        try:
+            df_m5, err = self.feed.get_klines(symbol, "M5", limit=10)
+            if err or df_m5 is None or df_m5.empty:
+                return None, None
+            # Chercher la candle dont le timestamp correspond au début de la fenêtre
+            candle = df_m5[df_m5["timestamps"] == pd.Timestamp(window_ts, unit="s", tz="UTC")]
+            if candle.empty:
+                return None, None
+            return float(candle["open"].iloc[0]), float(candle["close"].iloc[0])
+        except Exception:
+            return None, None
 
     def place_bet(self, symbol, kronos_direction, current_price, predicted_price):
         """
@@ -523,6 +564,8 @@ class Polymarket5MinTracker:
         # Only bet if Kronos has a clear direction (not FLAT)
         threshold = 0.0003  # Very small threshold — most 5-min moves count
         if abs(predicted_return) < threshold:
+            if self.logger:
+                self.logger.info(f"[PM] No bet | FLAT | pred_return={predicted_return:+.6f} < threshold")
             return {
                 "direction": "FLAT",
                 "market": "no bet (prediction too flat)",
@@ -533,9 +576,20 @@ class Polymarket5MinTracker:
 
         # Get the NEXT 5-min window (we bet on the upcoming window, not current)
         window_ts = self._get_next_window_ts()
+        window_start = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M")
+        window_end = datetime.fromtimestamp(window_ts + 300, tz=timezone.utc).strftime("%H:%M")
+
+        if self.logger:
+            self.logger.info(
+                f"[PM] Placing bet | symbol={symbol} | direction={direction} | "
+                f"window={window_start}-{window_end} | current={current_price:.2f} | predicted={predicted_price:.2f}"
+            )
+
         market = self._fetch_market(symbol, window_ts)
 
         if market is None:
+            if self.logger:
+                self.logger.warning(f"[PM] No market found | symbol={symbol} | window={window_start}-{window_end}")
             return {
                 "direction": direction,
                 "market": "no matching 5-min market",
@@ -553,6 +607,8 @@ class Polymarket5MinTracker:
             pm_side = "Down"
 
         if buy_price is None or buy_price <= 0.01:
+            if self.logger:
+                self.logger.warning(f"[PM] Invalid buy price | side={pm_side} | price={buy_price}")
             return {
                 "direction": direction,
                 "market": f"price too low or None ({buy_price})",
@@ -563,6 +619,13 @@ class Polymarket5MinTracker:
         shares = self.bet_amount / buy_price
         potential_payout = shares  # Each share pays €1 if correct
         potential_profit = potential_payout - self.bet_amount
+
+        if self.logger:
+            self.logger.info(
+                f"[PM] Bet placed | side={pm_side} | buy_price={buy_price:.4f} | "
+                f"shares={shares:.4f} | potential_payout={potential_payout:.2f}€ | "
+                f"potential_profit={potential_profit:+.2f}€"
+            )
 
         position = {
             "symbol": symbol,
@@ -592,8 +655,8 @@ class Polymarket5MinTracker:
             "polymarket_side": pm_side,
             "polymarket_buy_price": round(buy_price, 4),
             "potential_profit_eur": round(potential_profit, 2),
-            "window_start": datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M"),
-            "window_end": datetime.fromtimestamp(window_ts + 300, tz=timezone.utc).strftime("%H:%M"),
+            "window_start": window_start,
+            "window_end": window_end,
             "position": position,
         }
 
@@ -602,11 +665,9 @@ class Polymarket5MinTracker:
         Règle les bets dont la fenêtre 5-min est terminée.
 
         Pour chaque position expirée, on détermine UP ou DOWN en comparant
-        le prix d'ouverture et de clôture de la fenêtre 5-min.
+        le prix d'ouverture et de clôture de la candle M5 exacte de la fenêtre.
         C'est exactement comment Polymarket settle ces marchés.
         """
-        import requests
-
         settled = []
         now_ts = int(datetime.now(timezone.utc).timestamp())
 
@@ -616,21 +677,45 @@ class Polymarket5MinTracker:
                 continue  # Window still open
 
             symbol = pos["symbol"]
-            entry_price = pos["current_price"]  # Price at the start of the window
-            current_price = current_prices.get(symbol, entry_price)
+            window_ts = pos["window_start_ts"]
 
-            # The real settlement: did price go UP or DOWN during the 5-min window?
-            # We compare the price at window start vs price at window end
-            actual_direction = "UP" if current_price > entry_price else "DOWN"
+            # Try to get the exact M5 candle for this window
+            candle_open, candle_close = self._get_m5_candle(symbol, window_ts)
+
+            if candle_open is not None and candle_close is not None:
+                actual_direction = "UP" if candle_close > candle_open else "DOWN"
+                settlement_source = "m5_candle"
+                if self.logger:
+                    self.logger.info(
+                        f"[PM] Settlement (candle) | symbol={symbol} | window={window_ts} | "
+                        f"open={candle_open:.2f} | close={candle_close:.2f} | "
+                        f"actual={actual_direction}"
+                    )
+            else:
+                # Fallback: use current price vs entry price (approximate)
+                entry_price = pos["current_price"]
+                current_price = current_prices.get(symbol, entry_price)
+                actual_direction = "UP" if current_price > entry_price else "DOWN"
+                settlement_source = "fallback"
+                if self.logger:
+                    self.logger.warning(
+                        f"[PM] Settlement (fallback) | symbol={symbol} | window={window_ts} | "
+                        f"entry={entry_price:.2f} | current={current_price:.2f} | "
+                        f"actual={actual_direction}"
+                    )
 
             # Did our bet win?
             won = (pos["direction"] == actual_direction)
 
             if won:
-                payout = pos["shares"]  # Each share pays €1
-                profit = payout - pos["bet_amount"]
+                gross_payout = pos["shares"]  # Each share pays €1
+                fee = gross_payout * 0.02       # Polymarket ~2% fee on winnings
+                net_payout = gross_payout - fee
+                profit = net_payout - pos["bet_amount"]
             else:
-                payout = 0
+                gross_payout = 0
+                fee = 0
+                net_payout = 0
                 profit = -pos["bet_amount"]
 
             self.total_pnl += profit
@@ -641,12 +726,15 @@ class Polymarket5MinTracker:
                 "side": pos["pm_side"],
                 "buy_price": pos["pm_buy_price"],
                 "bet_amount": pos["bet_amount"],
-                "entry_price": entry_price,
-                "exit_price": current_price,
+                "entry_price": pos["current_price"],
+                "exit_price": candle_close if candle_close is not None else current_prices.get(symbol),
                 "actual_direction": actual_direction,
                 "won": won,
-                "payout": round(payout, 2),
+                "gross_payout": round(gross_payout, 2),
+                "fee_eur": round(fee, 2),
+                "payout": round(net_payout, 2),
                 "profit_eur": round(profit, 2),
+                "settlement_source": settlement_source,
                 "window_start": pos["window_start_ts"],
                 "window_end": pos["window_end_ts"],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -654,6 +742,14 @@ class Polymarket5MinTracker:
             self.results.append(result)
             self.positions.remove(pos)
             settled.append(result)
+
+            if self.logger:
+                status_icon = "✅" if won else "❌"
+                self.logger.info(
+                    f"[PM] Settled | {status_icon} {pos['direction']} vs {actual_direction} | "
+                    f"profit={profit:+.2f}€ | gross={gross_payout:.2f}€ | fee={fee:.2f}€ | "
+                    f"source={settlement_source}"
+                )
 
         return settled
 
@@ -672,25 +768,57 @@ class Polymarket5MinTracker:
         }
 
 
+# ─── Colored Formatter ──────────────────────────────────────────────────
+class ColoredFormatter(logging.Formatter):
+    """Formatter ANSI coloré pour la console."""
+
+    COLORS = {
+        "DEBUG": "\033[36m",     # cyan
+        "INFO": "\033[32m",      # green
+        "WARNING": "\033[33m",   # yellow
+        "ERROR": "\033[31m",     # red
+        "CRITICAL": "\033[35m",  # magenta
+    }
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+
+    def __init__(self, fmt=None, datefmt=None, use_color=True):
+        super().__init__(fmt, datefmt)
+        self.use_color = use_color
+
+    def format(self, record):
+        levelname = record.levelname
+        if self.use_color and levelname in self.COLORS:
+            record.levelname = f"{self.BOLD}{self.COLORS[levelname]}{levelname}{self.RESET}"
+        formatted = super().format(record)
+        record.levelname = levelname  # restore
+        return formatted
+
+
 # ─── Logger Setup ──────────────────────────────────────────────────────
 def setup_logger(log_dir, model_name, symbol, timeframe):
-    """Setup detailed file logger + console logger."""
+    """Setup detailed file logger + console logger with colors."""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = Path(log_dir) / f"kronos_{model_name}_{symbol}_{timeframe}_{ts}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    formatter = logging.Formatter(
+    plain_formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-7s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    colored_formatter = ColoredFormatter(
+        "%(asctime)s | %(levelname)-7s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        use_color=True,
     )
 
     file_handler = logging.FileHandler(str(log_file))
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(plain_formatter)
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
+    console_handler.setFormatter(colored_formatter)
 
     logger = logging.getLogger(f"kronos_{model_name}_{symbol}")
     logger.setLevel(logging.DEBUG)
@@ -821,7 +949,7 @@ def run_polymarket_loop(args):
 
     # Init feed + tracker
     feed = BinancePublicFeed()
-    pm_tracker = Polymarket5MinTracker(bet_amount=args.bet_amount)
+    pm_tracker = Polymarket5MinTracker(bet_amount=args.bet_amount, feed=feed, logger=logger)
 
     # Load presets
     tf_secs = TF_SECONDS[args.timeframe]

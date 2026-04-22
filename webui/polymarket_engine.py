@@ -12,8 +12,10 @@ import json
 import time
 import threading
 import traceback
+import logging
 from datetime import datetime, timedelta, timezone
 from collections import deque
+from pathlib import Path
 
 import torch
 import pandas as pd
@@ -44,6 +46,7 @@ from live_cli import (
     PRESETS,
     BinancePublicFeed,
     Polymarket5MinTracker,
+    ColoredFormatter,
     load_kronos,
     predict_direction,
     seconds_to_next_window,
@@ -85,6 +88,42 @@ class PolymarketSession:
 
         self._stop_event = threading.Event()
 
+        # Logger for file + colored console output
+        self._logger = self._setup_session_logger()
+
+    def _setup_session_logger(self):
+        """Setup a logger that writes to both file and console with colors."""
+        import uuid
+        session_id = str(uuid.uuid4())[:8]
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = Path("./logs/webui")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"polymarket_{session_id}_{ts}.log"
+
+        plain_fmt = logging.Formatter(
+            "%(asctime)s | %(levelname)-7s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        colored_fmt = ColoredFormatter(
+            "%(asctime)s | %(levelname)-7s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            use_color=True,
+        )
+
+        file_handler = logging.FileHandler(str(log_file))
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(plain_fmt)
+
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(colored_fmt)
+
+        logger = logging.getLogger(f"pm_session_{session_id}")
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        return logger
+
     # ─── Public read interface (called from Flask thread) ──────────
 
     def get_state(self):
@@ -124,6 +163,10 @@ class PolymarketSession:
         }
         with self._lock:
             self._log_entries.append(entry)
+        # Also write to the file + console logger
+        if self._logger:
+            log_method = getattr(self._logger, level.lower(), self._logger.info)
+            log_method(message)
 
     def _update_from_tracker(self, tracker: Polymarket5MinTracker):
         with self._lock:
@@ -208,7 +251,7 @@ class PolymarketSession:
         self._log("INFO", f"Model loaded: {self._model_info['name']} ({self._model_info['params']})")
 
         feed = BinancePublicFeed()
-        tracker = Polymarket5MinTracker(bet_amount=self.bet_amount)
+        tracker = Polymarket5MinTracker(bet_amount=self.bet_amount, feed=feed, logger=self._logger)
 
         tf_secs = TF_SECONDS[self.timeframe]
         preset = PRESETS.get(self.timeframe, PRESETS["M5"])
@@ -218,6 +261,7 @@ class PolymarketSession:
         self._log("INFO", f"Lookback: {lookback} | Pred len: {pred_len} | Samples: {self.samples}")
 
         # Fetch initial data
+        self._log("INFO", f"Fetching initial market data for {self.symbol}...")
         df, err = feed.get_klines(self.symbol, self.timeframe, limit=500)
         if err:
             raise RuntimeError(f"Failed to fetch data: {err}")
@@ -230,16 +274,22 @@ class PolymarketSession:
             current_price = feed.get_price(self.symbol)
             if current_price:
                 self._set_current_price(current_price)
+                self._log("INFO", f"[Cycle {self.cycle}] Checking expired bets | current_price={current_price:.2f}")
                 settled = tracker.settle_all_expired({self.symbol: current_price})
                 for r in settled:
-                    icon = "+" if r["won"] else "-"
+                    icon = "✅" if r["won"] else "❌"
+                    fee_str = f" | fee={r.get('fee_eur', 0):.2f}€" if r.get("fee_eur") else ""
                     self._log("INFO",
                         f"SETTLED | {icon} {r['side']:4s} | "
-                        f"€{r['profit_eur']:+.2f} | "
+                        f"profit={r['profit_eur']:+.2f}€ | "
+                        f"gross={r.get('gross_payout', 0):.2f}€{fee_str} | "
+                        f"source={r.get('settlement_source', 'unknown')} | "
                         f"Entry {r['entry_price']:.2f} -> Exit {r['exit_price']:.2f} | "
                         f"Actual: {r['actual_direction']}"
                     )
                     self._add_settled(r)
+                if not settled:
+                    self._log("DEBUG", f"[Cycle {self.cycle}] No expired bets to settle")
 
             # 2) Wait until ~15s before next 5-min window
             #    On first cycle, skip the wait — predict immediately
@@ -270,6 +320,7 @@ class PolymarketSession:
             self._log("INFO", f"[Cycle {self.cycle}] Price: {current_price:.2f}")
 
             # 4) Run Kronos prediction
+            self._log("INFO", f"[Cycle {self.cycle}] Running Kronos prediction...")
             direction, cur_price, pred_price, pred_df, pred_err = predict_direction(
                 predictor, df, lookback, pred_len, tf_secs,
                 sample_count=self.samples
@@ -283,13 +334,15 @@ class PolymarketSession:
             pred_return = (pred_price - cur_price) / cur_price if cur_price else 0
             self._set_last_prediction(direction, pred_price, pred_return)
             self._log("INFO",
-                f"KRONOS | {direction:4s} | Predicted: {pred_price:.2f} | Return: {pred_return*100:+.4f}%"
+                f"KRONOS | {direction:4s} | Current: {cur_price:.2f} | "
+                f"Predicted: {pred_price:.2f} | Return: {pred_return*100:+.4f}%"
             )
 
             # 5) Place bet
             if direction == "FLAT":
                 self._log("INFO", "No bet (prediction too flat)")
             else:
+                self._log("INFO", f"[Cycle {self.cycle}] Placing Polymarket bet | direction={direction}")
                 result = tracker.place_bet(self.symbol, direction, cur_price, pred_price)
                 if result.get("position"):
                     self._log("INFO",
