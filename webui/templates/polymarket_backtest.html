@@ -131,6 +131,12 @@
                 </div>
 
                 <div class="form-group">
+                    <label>Step Size: <span id="stepValue">1</span></label>
+                    <input type="range" id="stepSize" min="1" max="12" step="1" value="1">
+                    <div class="form-text">Fenêtres à sauter (1=toutes, 6=1h, 12=2h)</div>
+                </div>
+
+                <div class="form-group">
                     <label>Prediction Length: <span id="predLenValue">1</span></label>
                     <input type="range" id="predLen" min="1" max="10" step="1" value="1">
                     <div class="form-text">Candles futures à prédire</div>
@@ -261,6 +267,7 @@
         document.getElementById('betAmount').oninput = (e) => document.getElementById('betValue').textContent = e.target.value;
         document.getElementById('initialCapital').oninput = (e) => document.getElementById('capitalValue').textContent = e.target.value;
         document.getElementById('temperature').oninput = (e) => document.getElementById('tempValue').textContent = e.target.value;
+        document.getElementById('stepSize').oninput = (e) => document.getElementById('stepValue').textContent = e.target.value;
 
         async function loadModel() {
             const modelKey = document.getElementById('modelSelect').value;
@@ -302,6 +309,7 @@
                 bet_amount: parseFloat(document.getElementById('betAmount').value),
                 initial_capital: parseFloat(document.getElementById('initialCapital').value),
                 temperature: parseFloat(document.getElementById('temperature').value),
+                step_size: parseInt(document.getElementById('stepSize').value),
                 start_date: document.getElementById('startDate').value || null,
                 end_date: document.getElementById('endDate').value || null,
             };

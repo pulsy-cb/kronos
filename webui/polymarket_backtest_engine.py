@@ -15,6 +15,23 @@ from datetime import datetime, timezone
 from model.kronos import set_inference_seed
 
 
+def _to_native(obj):
+    """Convert numpy types to native Python for JSON."""
+    if isinstance(obj, dict):
+        return {k: _to_native(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_native(v) for v in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, float) and (obj != obj):  # NaN
+        return None
+    return obj
+
+
 class PolymarketBacktestSession:
     """Session de backtest Polymarket 5-min."""
 
@@ -143,8 +160,12 @@ class PolymarketBacktestSession:
         bets = []  # Historique des bets
         equity_curve = []  # Courbe de capital
         
-        # Boucle de backtest
-        for window_ts in window_starts:
+        # Boucle de backtest (avec skip selon step_size)
+        for i, window_ts in enumerate(window_starts):
+            # Skip selon step_size
+            if i % step_size != 0:
+                continue
+            
             if self.cancelled:
                 self.status = "cancelled"
                 return
@@ -300,7 +321,7 @@ class PolymarketBacktestSession:
             capital += pnl
             
             # Enregistrer le bet
-            bets.append({
+            bets.append(_to_native({
                 "timestamp": window_dt.isoformat(),
                 "window_ts": window_ts,
                 "direction": direction,
@@ -317,7 +338,7 @@ class PolymarketBacktestSession:
                 "fee": round(fee, 2),
                 "net_payout": round(net_payout, 2),
                 "pnl": round(pnl, 2),
-            })
+            }))
             
             # Mettre à jour l'équité après le bet
             equity_curve.append({
@@ -337,7 +358,7 @@ class PolymarketBacktestSession:
         last_price = float(df_price["close"].iloc[-1])
         bh_return = ((last_price - first_price) / first_price) * 100
         
-        metrics = {
+        metrics = _to_native({
             "total_bets": total_bets,
             "wins": wins,
             "losses": losses,
@@ -350,7 +371,7 @@ class PolymarketBacktestSession:
             "buy_hold_return_pct": round(bh_return, 2),
             "avg_bet_size": round(bet_amount, 2),
             "total_fees": round(sum(b["fee"] for b in bets), 2),
-        }
+        })
         
         # Préparer les données de prix pour le chart
         price_data = _prepare_price_data(df_price)
