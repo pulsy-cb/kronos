@@ -53,7 +53,17 @@ except Exception as e:
     POLYMARKET_AVAILABLE = False
     print(f"Warning: Polymarket engine not available: {e}")
 
+try:
+    from polymarket_backtest_engine import PolymarketBacktestSession, create_equity_chart, create_drawdown_chart, create_bets_chart
+    POLYMARKET_BACKTEST_AVAILABLE = True
+except Exception as e:
+    POLYMARKET_BACKTEST_AVAILABLE = False
+    print(f"Warning: Polymarket backtest engine not available: {e}")
+
 polymarket_manager = PolymarketSessionManager() if POLYMARKET_AVAILABLE else None
+
+# Polymarket backtest sessions
+polymarket_backtest_sessions = {}
 
 app = Flask(__name__)
 CORS(app)
@@ -1397,6 +1407,138 @@ def live_sessions_archive():
 
     sessions = read_log_file(str(summary_path), limit=500)
     return jsonify({'sessions': list(reversed(sessions))})
+
+
+# ======================================================================
+# Polymarket Backtest Routes
+# ======================================================================
+
+@app.route('/polymarket-backtest')
+def polymarket_backtest_page():
+    """Render the Polymarket backtest page."""
+    return render_template('polymarket_backtest.html')
+
+
+@app.route('/api/polymarket-backtest/start', methods=['POST'])
+def polymarket_backtest_start():
+    """Start a Polymarket backtest session."""
+    global predictor
+
+    if not MODEL_AVAILABLE or predictor is None:
+        return jsonify({'error': 'Model not loaded. Please load a model first.'}), 400
+
+    if not POLYMARKET_BACKTEST_AVAILABLE:
+        return jsonify({'error': 'Polymarket backtest engine not available.'}), 400
+
+    data = request.get_json()
+    price_file = data.get('price_file')
+    pm_file = data.get('polymarket_file')
+
+    if not price_file or not pm_file:
+        return jsonify({'error': 'Both price and Polymarket data files are required.'}), 400
+
+    # Load price data
+    df_price, error = load_data_file(price_file)
+    if error:
+        return jsonify({'error': f'Price data: {error}'}), 400
+    
+    # Ensure timestamps column exists (use index if needed)
+    if "timestamps" not in df_price.columns and df_price.index.name == "timestamp":
+        df_price = df_price.reset_index()
+    elif "timestamps" not in df_price.columns and df_price.index.name != "timestamp":
+        df_price["timestamps"] = df_price.index
+
+    # Load Polymarket data (special handling - different columns)
+    try:
+        df_pm = pd.read_parquet(pm_file)
+        # Convert timestamps if needed
+        if "event_start_ts" in df_pm.columns:
+            df_pm = df_pm.sort_values("event_start_ts").reset_index(drop=True)
+    except Exception as e:
+        return jsonify({'error': f'Polymarket data: {str(e)}'}), 400
+
+    params = {
+        'lookback': int(data.get('lookback', 120)),
+        'pred_len': int(data.get('pred_len', 1)),
+        'signal_threshold': float(data.get('signal_threshold', 0.0003)),
+        'bet_amount': float(data.get('bet_amount', 1.0)),
+        'initial_capital': float(data.get('initial_capital', 10000)),
+        'fee_pct': data.get('fee_pct', 0.02),
+        'temperature': float(data.get('temperature', 0.1)),
+        'top_p': float(data.get('top_p', 1.0)),
+        'sample_count': int(data.get('sample_count', 1)),
+        'start_date': data.get('start_date'),
+        'end_date': data.get('end_date'),
+        'model_key': data.get('model_key', 'unknown'),
+    }
+
+    session_id = str(uuid.uuid4())
+    session = PolymarketBacktestSession(df_price, df_pm, predictor, params)
+    polymarket_backtest_sessions[session_id] = session
+
+    thread = threading.Thread(target=session.run, daemon=True)
+    thread.start()
+
+    return jsonify({'session_id': session_id, 'status': 'started'})
+
+
+@app.route('/api/polymarket-backtest/progress')
+def polymarket_backtest_progress():
+    """Get progress of a running Polymarket backtest."""
+    session_id = request.args.get('session_id')
+    session = polymarket_backtest_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    return jsonify({
+        'progress': session.progress,
+        'status': session.status,
+        'error_message': session.error_message,
+        'current_step': session.current_step,
+        'total_steps': session.total_steps,
+    })
+
+
+@app.route('/api/polymarket-backtest/results')
+def polymarket_backtest_results():
+    """Get results of a completed Polymarket backtest."""
+    session_id = request.args.get('session_id')
+    session = polymarket_backtest_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    if session.status != 'completed':
+        return jsonify({'error': f'Session not completed yet. Status: {session.status}'}), 400
+
+    results = session.results
+
+    charts = {
+        'equity_curve': create_equity_chart(results),
+        'drawdown': create_drawdown_chart(results),
+        'bets': create_bets_chart(results),
+    }
+
+    return jsonify({
+        'metrics': results['metrics'],
+        'charts': charts,
+        'bets': results['bets'],
+    })
+
+
+@app.route('/api/polymarket-backtest/cancel', methods=['POST'])
+def polymarket_backtest_cancel():
+    """Cancel a running Polymarket backtest."""
+    data = request.get_json()
+    session_id = data.get('session_id')
+    session = polymarket_backtest_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    session.cancel()
+    return jsonify({'status': 'cancelling'})
 
 
 # ======================================================================
