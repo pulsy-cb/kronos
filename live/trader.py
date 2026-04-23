@@ -11,18 +11,21 @@ import time
 import threading
 import traceback
 
+from model.kronos import set_inference_seed
 from data.broker_feed import BrokerFeed, TF_SECONDS
 from live.broker_executor import BrokerExecutor
 from live.config import TradingConfig, DIRECTION_LONG_SHORT, DIRECTION_LONG_ONLY
 from live.logger import SessionLogger
+from webui.time_filter import is_trading_allowed
 
 
 class LiveTrader:
     """Boucle de trading live connectee a un broker."""
 
-    def __init__(self, config: TradingConfig, predictor, feed: BrokerFeed, executor: BrokerExecutor, logger: SessionLogger = None):
+    def __init__(self, config: TradingConfig, predictor, feed: BrokerFeed, executor: BrokerExecutor, logger: SessionLogger = None, predictor_voter=None):
         self.config = config
         self.predictor = predictor
+        self.predictor_voter = predictor_voter
         self.feed = feed
         self.executor = executor
         self.logger = logger
@@ -54,6 +57,10 @@ class LiveTrader:
         self.total_trades = 0
         self.winning_trades = 0
         self.total_pnl = 0.0
+
+        # Daily profit cap tracking
+        self.daily_pnl = 0.0
+        self.daily_pnl_date = None
 
     def start(self):
         if self.running:
@@ -177,6 +184,7 @@ class LiveTrader:
                 x_df = df[["open", "high", "low", "close", "volume", "amount"]]
 
                 with torch.inference_mode():
+                    set_inference_seed()
                     pred_df = self.predictor.predict(
                         df=x_df,
                         x_timestamp=x_timestamp,
@@ -185,11 +193,34 @@ class LiveTrader:
                         T=self.config.temperature,
                         top_p=self.config.top_p,
                         sample_count=self.config.sample_count,
+                        sample_logits=False,
                     )
+
+                    # Ensemble voting: if a second predictor is provided, only trade when both agree
+                    if self.predictor_voter is not None:
+                        set_inference_seed()
+                        pred_df_voter = self.predictor_voter.predict(
+                            df=x_df,
+                            x_timestamp=x_timestamp,
+                            y_timestamp=y_timestamp,
+                            pred_len=self.config.pred_len,
+                            T=self.config.temperature,
+                            top_p=self.config.top_p,
+                            sample_count=self.config.sample_count,
+                            sample_logits=False,
+                        )
 
                 current_close = float(df["close"].iloc[-1])
                 predicted_end_close = float(pred_df["close"].iloc[-1])
                 predicted_return = (predicted_end_close - current_close) / current_close
+
+                # Ensemble voting filter
+                if self.predictor_voter is not None:
+                    voter_end_close = float(pred_df_voter["close"].iloc[-1])
+                    voter_return = (voter_end_close - current_close) / current_close
+                    # Only trade when both models agree on direction
+                    if np.sign(predicted_return) != np.sign(voter_return):
+                        predicted_return = 0.0  # Force neutral
 
                 config = self.config
 
@@ -214,6 +245,12 @@ class LiveTrader:
                     elif predicted_return < -config.exit_threshold and self.current_position is not None:
                         signal = "exit"
                     else:
+                        signal = "neutral"
+
+                # Time filter: force neutral if outside allowed hours
+                if config.enable_time_filter and signal in ("long", "short"):
+                    bar_ts = new_bar_time.isoformat() if hasattr(new_bar_time, "isoformat") else str(new_bar_time)
+                    if not is_trading_allowed(bar_ts, config.symbol):
                         signal = "neutral"
 
                 self.last_signal = {
@@ -271,6 +308,20 @@ class LiveTrader:
                 self._close_position("reverse")
 
         if signal in ("long", "short") and self.current_position is None:
+            # Check daily profit cap before opening
+            if config.daily_profit_cap > 0:
+                today = datetime.now().date()
+                if self.daily_pnl_date != today:
+                    self.daily_pnl_date = today
+                    self.daily_pnl = 0.0
+                # Get current balance for percentage calculation
+                acct = self.feed.get_account_info()
+                balance = acct["balance"] if acct else 10000
+                daily_return_pct = self.daily_pnl / balance if balance > 0 else 0
+                if daily_return_pct >= config.daily_profit_cap:
+                    self.error_message = f"Daily profit cap atteint: {daily_return_pct*100:.2f}% >= {config.daily_profit_cap*100:.2f}%"
+                    return
+
             self._open_position(signal, current_close, predicted_return)
 
     def _open_position(self, direction, current_price, predicted_return=0.0):
@@ -356,6 +407,13 @@ class LiveTrader:
             if pnl > 0:
                 self.winning_trades += 1
             self.total_pnl += pnl
+
+            # Update daily PnL tracking
+            today = datetime.now().date()
+            if self.daily_pnl_date != today:
+                self.daily_pnl_date = today
+                self.daily_pnl = 0.0
+            self.daily_pnl += pnl
 
             self.trade_log.append({
                 "type": "close",

@@ -5,8 +5,13 @@ Kronos Backtest Engine — single-asset rolling backtest using Kronos prediction
 import json
 import numpy as np
 import pandas as pd
+import torch
 import plotly.graph_objects as go
 import plotly.utils
+
+from model.kronos import set_inference_seed
+from backtest_logger import BacktestLogger, extract_date_from_signals
+from time_filter import is_trading_allowed
 
 
 class BacktestSession:
@@ -44,6 +49,7 @@ class BacktestSession:
     # ------------------------------------------------------------------
 
     def _run_rolling_backtest(self):
+        set_inference_seed()
         df = self.df
         params = self.params
         lookback = params["lookback"]
@@ -173,7 +179,7 @@ class BacktestSession:
                     try:
                         batch_preds = self.predictor.predict_batch_from_gpu(
                             bundle, batch_idx, b_end,
-                            T=temperature, top_p=top_p, sample_count=sample_count, verbose=False
+                            T=temperature, top_p=top_p, sample_count=sample_count, sample_logits=False, verbose=False
                         )
                     except _torch.cuda.OutOfMemoryError:
                         # Retry with smaller batch
@@ -181,7 +187,7 @@ class BacktestSession:
                         b_end = min(batch_idx + half_batch, chunk_n)
                         batch_preds = self.predictor.predict_batch_from_gpu(
                             bundle, batch_idx, b_end,
-                            T=temperature, top_p=top_p, sample_count=sample_count, verbose=False
+                            T=temperature, top_p=top_p, sample_count=sample_count, sample_logits=False, verbose=False
                         )
 
                     preds_gpu[batch_idx:b_end] = batch_preds
@@ -234,6 +240,7 @@ class BacktestSession:
                         T=temperature,
                         top_p=top_p,
                         sample_count=sample_count,
+                        sample_logits=False,
                         verbose=False,
                     )
 
@@ -258,6 +265,7 @@ class BacktestSession:
                         T=temperature,
                         top_p=top_p,
                         sample_count=sample_count,
+                        sample_logits=False,
                     )
                     all_predictions[step_i] = pred_df
 
@@ -268,6 +276,9 @@ class BacktestSession:
         # Phase 3: Generate signals from predictions
         # ---------------------------------------------------------------
         signals = []
+
+        symbol = params.get("symbol", "XAUUSD")
+        enable_time_filter = params.get("enable_time_filter", False)
 
         for step_i in range(total_windows):
             pred_df = all_predictions[step_i]
@@ -282,6 +293,12 @@ class BacktestSession:
                 signal_type = "exit"
             else:
                 signal_type = "neutral"
+
+            # Time filter: force neutral if outside allowed hours
+            if enable_time_filter and signal_type in ("long", "short"):
+                ts_str = current_timestamp.isoformat() if hasattr(current_timestamp, "isoformat") else str(current_timestamp)
+                if not is_trading_allowed(ts_str, symbol):
+                    signal_type = "neutral"
 
             signals.append(
                 {
@@ -298,7 +315,7 @@ class BacktestSession:
             )
 
         # Simulate trades
-        trade_results = self._simulate_trades(
+        trade_results = _simulate_trades(
             df, signals, initial_capital,
             commission_per_trade=params.get("commission_per_trade", 0.07),
             stop_loss_pct=params.get("stop_loss_pct", 0.0),
@@ -307,9 +324,12 @@ class BacktestSession:
         )
 
         # Calculate metrics
-        metrics = self._calculate_metrics(
+        metrics = _calculate_metrics(
             trade_results, initial_capital, df
         )
+
+        # --- Write JSONL log for analysis ---
+        write_backtest_log(signals, trade_results, params)
 
         self.results = {
             "params": params,
@@ -319,14 +339,87 @@ class BacktestSession:
             "drawdown_series": trade_results["drawdown_series"],
             "signals": signals,
             "trades": trade_results["trades"],
-            "price_data": self._prepare_price_data(df),
+            "price_data": _prepare_price_data(df),
         }
 
     # ------------------------------------------------------------------
-    # Trade simulation
+    # JSONL logging for analysis scripts
     # ------------------------------------------------------------------
 
-    def _simulate_trades(self, df, signals, initial_capital, commission_per_trade=0.07,
+# ------------------------------------------------------------------
+# JSONL logging (shared between BacktestSession and EnsembleSession)
+# ------------------------------------------------------------------
+
+def write_backtest_log(signals, trade_results, params):
+    """Write backtest results to JSONL log file (same format as live logs)."""
+    model_key = params.get("model_key", "unknown")
+    model_name = params.get("model_name", model_key)
+    symbol = params.get("symbol", "?")
+    timeframe = params.get("timeframe", "?")
+
+    logger = BacktestLogger(
+        model_key=model_key,
+        model_name=model_name,
+        symbol=symbol,
+        timeframe=timeframe,
+        log_dir=params.get("log_dir", "logs"),
+    )
+
+    date_str = extract_date_from_signals(signals)
+    logger.open(date_str)
+
+    # Write signal events
+    for s in signals:
+        logger.log_signal(
+            signal=s["signal"],
+            predicted_return=s["predicted_return"],
+            predicted_close=s["predicted_close"],
+            current_close=s["current_close"],
+            timestamp=s["timestamp"],
+        )
+
+    # Write trade events (map backtest format -> live format)
+    trades = trade_results["trades"]
+    for i, trade in enumerate(trades):
+        if trade["type"] == "buy":
+            sl = trade.get("sl")
+            tp = trade.get("tp")
+            logger.log_trade_open(
+                direction="long",
+                price=trade["price"],
+                volume=trade.get("shares", 0),
+                timestamp=trade["timestamp"],
+                sl=sl,
+                tp=tp,
+            )
+        elif trade["type"] == "sell":
+            reason = trade.get("exit_reason", "max_hold")
+            logger.log_trade_close(
+                direction="long",
+                price=trade["price"],
+                volume=trade.get("shares", 0),
+                pnl=trade.get("pnl", 0),
+                reason=reason,
+                timestamp=trade["timestamp"],
+            )
+
+    # Write equity events
+    equity_curve = trade_results["equity_curve"]
+    for eq in equity_curve:
+        logger.log_equity(
+            equity=eq["portfolio_value"],
+            balance=eq["portfolio_value"],
+            timestamp=eq["timestamp"],
+        )
+
+    logger.close()
+
+
+# ------------------------------------------------------------------
+# Trade simulation
+# ------------------------------------------------------------------
+
+def _simulate_trades(df, signals, initial_capital, commission_per_trade=0.07,
                           stop_loss_pct=0.0, take_profit_pct=0.0, max_hold_bars=0):
         # commission_per_trade = total round-trip commission (split 50/50 on buy/sell)
         commission_per_side = commission_per_trade / 2.0
@@ -482,11 +575,11 @@ class BacktestSession:
             "trades": trades,
         }
 
-    # ------------------------------------------------------------------
-    # Metrics
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Metrics
+# ------------------------------------------------------------------
 
-    def _calculate_metrics(self, trade_results, initial_capital, df):
+def _calculate_metrics(trade_results, initial_capital, df):
         equity = trade_results["equity_curve"]
         trades = trade_results["trades"]
         drawdown = trade_results["drawdown_series"]
@@ -546,11 +639,11 @@ class BacktestSession:
             "avg_trade_return_pct": round(avg_trade_return * 100, 2),
         }
 
-    # ------------------------------------------------------------------
-    # Price data for chart
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Price data for chart
+# ------------------------------------------------------------------
 
-    def _prepare_price_data(self, df):
+def _prepare_price_data(df):
         data = []
         for _, row in df.iterrows():
             ts = row["timestamps"]
@@ -829,5 +922,389 @@ class CompareSession:
 
             self.current_step += n_windows
             self.progress = self.current_step / self.total_steps
+
+        self.results = {'models': model_results}
+
+
+class EnsembleSession:
+    """Run ensemble voting backtest using two models (xaumodel + zmini)."""
+
+    def __init__(self, df, predictors, params):
+        self.df = df
+        self.predictors = predictors  # dict: model_key -> predictor (expects 2 models)
+        self.params = params
+        self.batch_size = params.get("batch_size", 64)
+        self.cancelled = False
+        self.progress = 0.0
+        self.status = "pending"
+        self.error_message = None
+        self.current_step = 0
+        self.total_steps = 0
+        self.results = None
+
+    def run(self):
+        try:
+            self.status = "running"
+            self._run_ensemble_backtest()
+            if not self.cancelled:
+                self.status = "completed"
+        except Exception as e:
+            self.status = "error"
+            self.error_message = str(e)
+
+    def cancel(self):
+        self.cancelled = True
+
+    def _run_ensemble_backtest(self):
+        set_inference_seed()
+        df = self.df
+        params = self.params
+        lookback = params["lookback"]
+        pred_len = params["pred_len"]
+        step_size = params["step_size"]
+        signal_threshold = params["signal_threshold"]
+        exit_threshold = params.get("exit_threshold", signal_threshold)
+        initial_capital = params["initial_capital"]
+        commission_per_trade = params.get("commission_per_trade", 0.07)
+        temperature = params.get("temperature", 0.1)
+        top_p = params.get("top_p", 1.0)
+        sample_count = params.get("sample_count", 1)
+
+        model_keys = list(self.predictors.keys())
+        if len(model_keys) < 2:
+            raise ValueError("Ensemble requires at least 2 models")
+
+        predictor_a = self.predictors[model_keys[0]]
+        predictor_b = self.predictors[model_keys[1]]
+
+        start_date = params.get("start_date")
+        end_date = params.get("end_date")
+        if start_date or end_date:
+            if "timestamps" in df.columns:
+                if start_date:
+                    start_dt = pd.to_datetime(start_date)
+                    df = df[df["timestamps"] >= start_dt]
+                if end_date:
+                    end_dt = pd.to_datetime(end_date)
+                    df = df[df["timestamps"] <= end_dt]
+            df = df.reset_index(drop=True)
+            if len(df) == 0:
+                raise ValueError("No data in the selected date range")
+
+        required_data = lookback + pred_len
+        if len(df) < required_data:
+            raise ValueError(f"Need at least {required_data} rows, got {len(df)}")
+
+        max_start = len(df) - required_data
+        starts = list(range(0, max_start + 1, step_size))
+        self.total_steps = len(starts)
+        self.current_step = 0
+
+        required_cols = ["open", "high", "low", "close"]
+        if "volume" in df.columns:
+            required_cols.append("volume")
+
+        signals = []
+        for idx in starts:
+            if self.cancelled:
+                self.status = "cancelled"
+                return
+
+            x_df = df.iloc[idx:idx + lookback][required_cols].copy()
+            x_timestamp = df.iloc[idx:idx + lookback]["timestamps"]
+            y_timestamp = df.iloc[idx + lookback:idx + lookback + pred_len]["timestamps"]
+
+            if isinstance(x_timestamp, pd.DatetimeIndex):
+                x_timestamp = pd.Series(x_timestamp, name="timestamps")
+            if isinstance(y_timestamp, pd.DatetimeIndex):
+                y_timestamp = pd.Series(y_timestamp, name="timestamps")
+
+            current_close = float(df.iloc[idx + lookback - 1]["close"])
+
+            with torch.inference_mode():
+                set_inference_seed()
+                pred_a = predictor_a.predict(
+                    df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+                    pred_len=pred_len, T=temperature, top_p=top_p,
+                    sample_count=sample_count, sample_logits=False, verbose=False,
+                )
+                set_inference_seed()
+                pred_b = predictor_b.predict(
+                    df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+                    pred_len=pred_len, T=temperature, top_p=top_p,
+                    sample_count=sample_count, sample_logits=False, verbose=False,
+                )
+
+            pred_return_a = (float(pred_a["close"].iloc[-1]) - current_close) / current_close
+            pred_return_b = (float(pred_b["close"].iloc[-1]) - current_close) / current_close
+
+            strict = params.get("strict_consensus", False)
+            if strict:
+                if pred_return_a > signal_threshold and pred_return_b > signal_threshold:
+                    avg_return = (pred_return_a + pred_return_b) / 2.0
+                elif pred_return_a < -exit_threshold and pred_return_b < -exit_threshold:
+                    avg_return = (pred_return_a + pred_return_b) / 2.0
+                else:
+                    avg_return = 0.0
+            else:
+                if np.sign(pred_return_a) == np.sign(pred_return_b):
+                    avg_return = (pred_return_a + pred_return_b) / 2.0
+                else:
+                    avg_return = 0.0
+
+            current_timestamp = df.iloc[idx + lookback - 1]["timestamps"]
+            if avg_return > signal_threshold:
+                signal_type = "long"
+            elif avg_return < -exit_threshold:
+                signal_type = "exit"
+            else:
+                signal_type = "neutral"
+
+            # Time filter: force neutral if outside allowed hours
+            symbol = params.get("symbol", "XAUUSD")
+            enable_time_filter = params.get("enable_time_filter", False)
+            if enable_time_filter and signal_type in ("long", "short"):
+                ts_str = current_timestamp.isoformat() if hasattr(current_timestamp, "isoformat") else str(current_timestamp)
+                if not is_trading_allowed(ts_str, symbol):
+                    signal_type = "neutral"
+
+            signals.append({
+                "timestamp": current_timestamp.isoformat() if hasattr(current_timestamp, "isoformat") else str(current_timestamp),
+                "signal": signal_type,
+                "predicted_return": avg_return,
+                "current_close": current_close,
+                "predicted_close": current_close * (1 + avg_return),
+                "return_a": pred_return_a,
+                "return_b": pred_return_b,
+            })
+
+            self.current_step += 1
+            self.progress = self.current_step / self.total_steps
+
+        trade_results = self._simulate_trades(
+            df, signals, initial_capital,
+            commission_per_trade=commission_per_trade,
+            stop_loss_pct=params.get("stop_loss_pct", 0.0),
+            take_profit_pct=params.get("take_profit_pct", 0.0),
+            max_hold_bars=params.get("max_hold_bars", 0),
+        )
+
+        metrics = self._calculate_metrics(trade_results, initial_capital, df)
+
+        # Write JSONL log for analysis
+        ensemble_key = "ensemble_" + "_".join(model_keys)
+        ensemble_name = "Ensemble (" + " + ".join(model_keys) + ")"
+        log_params = dict(params)
+        log_params["model_key"] = log_params.get("model_key", ensemble_key)
+        log_params["model_name"] = log_params.get("model_name", ensemble_name)
+        write_backtest_log(signals, trade_results, log_params)
+
+        # Consensus metrics
+        signal_threshold = params.get("signal_threshold", 0.0)
+        exit_threshold = params.get("exit_threshold", signal_threshold)
+        consensus_counts = {"both_long": 0, "both_short": 0, "both_neutral": 0, "disagree_dir": 0, "one_active": 0}
+        for s in signals:
+            ra = s.get("return_a", 0.0)
+            rb = s.get("return_b", 0.0)
+            if ra > signal_threshold and rb > signal_threshold:
+                consensus_counts["both_long"] += 1
+            elif ra < -exit_threshold and rb < -exit_threshold:
+                consensus_counts["both_short"] += 1
+            elif abs(ra) <= signal_threshold and abs(rb) <= exit_threshold:
+                consensus_counts["both_neutral"] += 1
+            elif np.sign(ra) != np.sign(rb):
+                consensus_counts["disagree_dir"] += 1
+            else:
+                consensus_counts["one_active"] += 1
+        consensus_trades = [t for t in trade_results["trades"] if t.get("type") == "sell"]
+        consensus_pnl = sum(t.get("pnl", 0.0) for t in consensus_trades)
+        consensus_wins = sum(1 for t in consensus_trades if t.get("pnl", 0.0) > 0)
+        consensus_wr = (consensus_wins / len(consensus_trades) * 100.0) if consensus_trades else 0.0
+        consensus_metrics = {
+            "signal_counts": consensus_counts,
+            "trade_count": len(consensus_trades),
+            "win_rate": round(consensus_wr, 2),
+            "pnl": round(consensus_pnl, 2),
+        }
+
+        self.results = {
+            "params": params,
+            "metrics": metrics,
+            "equity_curve": trade_results["equity_curve"],
+            "buy_hold_curve": trade_results["buy_hold_curve"],
+            "drawdown_series": trade_results["drawdown_series"],
+            "signals": signals,
+            "trades": trade_results["trades"],
+            "price_data": self._prepare_price_data(df),
+            "ensemble_models": model_keys,
+            "consensus_metrics": consensus_metrics,
+        }
+
+    def _simulate_trades(self, df, signals, initial_capital, commission_per_trade=0.07,
+                          stop_loss_pct=0.0, take_profit_pct=0.0, max_hold_bars=0):
+        commission_per_side = commission_per_trade / 2.0
+        capital = initial_capital
+        position = 0.0
+        entry_price = 0.0
+        entry_time = None
+        entry_bar_idx = 0
+        in_position = False
+        peak_capital = initial_capital
+
+        equity_curve = []
+        drawdown_series = []
+        trades = []
+
+        signal_map = {s["timestamp"]: s for s in signals}
+
+        for bar_idx, (_, row) in enumerate(df.iterrows()):
+            ts = row["timestamps"]
+            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            close = float(row["close"])
+            high = float(row["high"])
+            low = float(row["low"])
+
+            signal = signal_map.get(ts_str)
+
+            if in_position:
+                exit_reason = None
+                if stop_loss_pct > 0:
+                    low_return = (low - entry_price) / entry_price
+                    if low_return <= -stop_loss_pct:
+                        exit_reason = "stop_loss"
+                        close = entry_price * (1 - stop_loss_pct)
+                if take_profit_pct > 0 and exit_reason is None:
+                    high_return = (high - entry_price) / entry_price
+                    if high_return >= take_profit_pct:
+                        exit_reason = "take_profit"
+                        close = entry_price * (1 + take_profit_pct)
+                if max_hold_bars > 0 and exit_reason is None:
+                    bars_held = bar_idx - entry_bar_idx
+                    if bars_held >= max_hold_bars:
+                        exit_reason = "max_hold"
+                if exit_reason is None and signal is not None and signal["signal"] == "exit":
+                    exit_reason = "signal"
+
+                if exit_reason is not None:
+                    gross = position * close
+                    capital = gross - commission_per_side
+                    pnl = (close - entry_price) * position - commission_per_trade
+                    return_pct = (close - entry_price) / entry_price
+                    trades.append({
+                        "type": "sell", "timestamp": ts_str, "price": close,
+                        "shares": position, "pnl": pnl, "return_pct": return_pct,
+                        "entry_price": entry_price, "entry_time": entry_time,
+                        "exit_reason": exit_reason,
+                    })
+                    position = 0.0
+                    in_position = False
+
+            if not in_position and signal is not None and signal["signal"] == "long":
+                investable = capital - commission_per_side
+                position = investable / close
+                entry_price = close
+                entry_time = ts_str
+                entry_bar_idx = bar_idx
+                capital = 0.0
+                in_position = True
+                trades.append({
+                    "type": "buy", "timestamp": ts_str, "price": close, "shares": position,
+                })
+
+            portfolio_value = capital + (position * close if in_position else 0.0)
+            equity_curve.append({"timestamp": ts_str, "portfolio_value": portfolio_value})
+
+            peak_capital = max(peak_capital, portfolio_value)
+            drawdown = (peak_capital - portfolio_value) / peak_capital if peak_capital > 0 else 0.0
+            drawdown_series.append({"timestamp": ts_str, "drawdown": drawdown})
+
+        if in_position:
+            close = float(df.iloc[-1]["close"])
+            ts = df.iloc[-1]["timestamps"]
+            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            gross = position * close
+            capital = gross - commission_per_side
+            pnl = (close - entry_price) * position - commission_per_trade
+            return_pct = (close - entry_price) / entry_price
+            trades.append({
+                "type": "sell", "timestamp": ts_str, "price": close,
+                "shares": position, "pnl": pnl, "return_pct": return_pct,
+                "entry_price": entry_price, "entry_time": entry_time,
+                "exit_reason": "forced_close",
+            })
+            position = 0.0
+            in_position = False
+
+        first_close = float(df.iloc[0]["close"])
+        buy_hold_curve = []
+        for _, row in df.iterrows():
+            ts = row["timestamps"]
+            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            bh_value = initial_capital * (float(row["close"]) / first_close)
+            buy_hold_curve.append({"timestamp": ts_str, "portfolio_value": bh_value})
+
+        return {"equity_curve": equity_curve, "buy_hold_curve": buy_hold_curve, "drawdown_series": drawdown_series, "trades": trades}
+
+    def _calculate_metrics(self, trade_results, initial_capital, df):
+        equity = trade_results["equity_curve"]
+        trades = trade_results["trades"]
+        drawdown = trade_results["drawdown_series"]
+
+        final_value = equity[-1]["portfolio_value"] if equity else initial_capital
+        total_return = (final_value - initial_capital) / initial_capital
+
+        returns = []
+        for i in range(1, len(equity)):
+            prev = equity[i - 1]["portfolio_value"]
+            curr = equity[i]["portfolio_value"]
+            if prev > 0:
+                returns.append((curr - prev) / prev)
+
+        sharpe = 0.0
+        if len(returns) > 1 and np.std(returns) > 0:
+            sharpe = float(np.mean(returns) / np.std(returns) * np.sqrt(252))
+
+        max_dd = max((d["drawdown"] for d in drawdown), default=0.0)
+
+        sell_trades = [t for t in trades if t["type"] == "sell"]
+        wins = [t for t in sell_trades if t["pnl"] > 0]
+        win_rate = len(wins) / len(sell_trades) if sell_trades else 0.0
+
+        gross_profit = sum(t["pnl"] for t in sell_trades if t["pnl"] > 0)
+        gross_loss = abs(sum(t["pnl"] for t in sell_trades if t["pnl"] < 0))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+
+        first_close = float(df.iloc[0]["close"])
+        last_close = float(df.iloc[-1]["close"])
+        bh_return = (last_close - first_close) / first_close
+
+        avg_trade_return = float(np.mean([t["return_pct"] for t in sell_trades])) if sell_trades else 0.0
+
+        return {
+            "total_return_pct": round(total_return * 100, 2),
+            "sharpe_ratio": round(sharpe, 2),
+            "max_drawdown_pct": round(max_dd * 100, 2),
+            "win_rate_pct": round(win_rate * 100, 1),
+            "num_trades": len(sell_trades),
+            "profit_factor": round(profit_factor, 2) if profit_factor != float("inf") else "Inf",
+            "buy_hold_return_pct": round(bh_return * 100, 2),
+            "final_value": round(final_value, 2),
+            "avg_trade_return_pct": round(avg_trade_return * 100, 2),
+        }
+
+    def _prepare_price_data(self, df):
+        data = []
+        for _, row in df.iterrows():
+            ts = row["timestamps"]
+            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            data.append({
+                "timestamp": ts_str,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row["volume"]) if "volume" in row else 0,
+            })
+        return data
 
         self.results = {'models': model_results}

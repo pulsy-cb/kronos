@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import json
 import torch
+from model.kronos import set_inference_seed
 import plotly.graph_objects as go
 import plotly.utils
 from flask import Flask, render_template, request, jsonify, Response
@@ -26,11 +27,17 @@ except ImportError:
     print("Warning: Kronos model cannot be imported, will use simulated data for demonstration")
 
 try:
-    from backtest_engine import BacktestSession, CompareSession, create_equity_chart, create_drawdown_chart, create_price_trades_chart
+    from backtest_engine import BacktestSession, CompareSession, EnsembleSession, create_equity_chart, create_drawdown_chart, create_price_trades_chart
     BACKTEST_AVAILABLE = True
 except ImportError:
     BACKTEST_AVAILABLE = False
     print("Warning: Backtest engine not available")
+
+try:
+    from backtest_logger import detect_symbol_from_path, detect_timeframe_from_path
+    BACKTEST_LOGGER_AVAILABLE = True
+except ImportError:
+    BACKTEST_LOGGER_AVAILABLE = False
 
 try:
     from live.session import TradingSessionManager
@@ -46,7 +53,17 @@ except Exception as e:
     POLYMARKET_AVAILABLE = False
     print(f"Warning: Polymarket engine not available: {e}")
 
+try:
+    from polymarket_backtest_engine import PolymarketBacktestSession, create_equity_chart, create_drawdown_chart, create_bets_chart
+    POLYMARKET_BACKTEST_AVAILABLE = True
+except Exception as e:
+    POLYMARKET_BACKTEST_AVAILABLE = False
+    print(f"Warning: Polymarket backtest engine not available: {e}")
+
 polymarket_manager = PolymarketSessionManager() if POLYMARKET_AVAILABLE else None
+
+# Polymarket backtest sessions
+polymarket_backtest_sessions = {}
 
 app = Flask(__name__)
 CORS(app)
@@ -455,12 +472,12 @@ def predict():
     try:
         data = request.get_json()
         file_path = data.get('file_path')
-        lookback = int(data.get('lookback', 400))
-        pred_len = int(data.get('pred_len', 120))
-        
+        lookback = int(data.get('lookback', 120))
+        pred_len = int(data.get('pred_len', 1))
+
         # Get prediction quality parameters
-        temperature = float(data.get('temperature', 1.0))
-        top_p = float(data.get('top_p', 0.9))
+        temperature = float(data.get('temperature', 0.1))
+        top_p = float(data.get('top_p', 1.0))
         sample_count = int(data.get('sample_count', 1))
         
         if not file_path:
@@ -477,6 +494,7 @@ def predict():
         # Perform prediction
         if MODEL_AVAILABLE and predictor is not None:
             try:
+                set_inference_seed()
                 # Use real Kronos model
                 # Only use necessary columns: OHLCV, excluding amount
                 required_cols = ['open', 'high', 'low', 'close']
@@ -531,7 +549,8 @@ def predict():
                     pred_len=pred_len,
                     T=temperature,
                     top_p=top_p,
-                    sample_count=sample_count
+                    sample_count=sample_count,
+                    sample_logits=False,
                 )
                 
             except Exception as e:
@@ -798,22 +817,27 @@ def backtest_start():
         return jsonify({'error': error}), 400
 
     params = {
-        'lookback': int(data.get('lookback', 400)),
-        'pred_len': int(data.get('pred_len', 120)),
-        'step_size': int(data.get('step_size', 60)),
-        'signal_threshold': float(data.get('signal_threshold', 0.005)),
-        'exit_threshold': float(data.get('exit_threshold', 0.0025)),
+        'lookback': int(data.get('lookback', 120)),
+        'pred_len': int(data.get('pred_len', 1)),
+        'step_size': int(data.get('step_size', 1)),
+        'signal_threshold': float(data.get('signal_threshold', 0.0003)),
+        'exit_threshold': float(data.get('exit_threshold', 0.0002)),
         'initial_capital': float(data.get('initial_capital', 100000)),
         'commission_per_trade': float(data.get('commission_per_trade', 0.07)),
-        'temperature': float(data.get('temperature', 1.0)),
-        'top_p': float(data.get('top_p', 0.9)),
+        'temperature': float(data.get('temperature', 0.1)),
+        'top_p': float(data.get('top_p', 1.0)),
         'sample_count': int(data.get('sample_count', 1)),
         'start_date': data.get('start_date'),
         'end_date': data.get('end_date'),
         'batch_size': int(data.get('batch_size', 16)),
-        'stop_loss_pct': float(data.get('stop_loss_pct', 0.0)),
-        'take_profit_pct': float(data.get('take_profit_pct', 0.0)),
-        'max_hold_bars': int(data.get('max_hold_bars', 0)),
+        'stop_loss_pct': float(data.get('stop_loss_pct', 0.001)),
+        'take_profit_pct': float(data.get('take_profit_pct', 0.002)),
+        'max_hold_bars': int(data.get('max_hold_bars', 5)),
+        'model_key': data.get('model_key', 'unknown'),
+        'model_name': data.get('model_name', data.get('model_key', 'unknown')),
+        'symbol': detect_symbol_from_path(file_path) if BACKTEST_LOGGER_AVAILABLE else '?',
+        'timeframe': detect_timeframe_from_path(file_path) if BACKTEST_LOGGER_AVAILABLE else '?',
+        'log_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs'),
     }
 
     if len(df) < params['lookback'] + params['pred_len']:
@@ -917,6 +941,20 @@ def backtest_cancel():
     return jsonify({'status': 'cancelling'})
 
 
+@app.route('/api/ensemble/cancel', methods=['POST'])
+def ensemble_cancel():
+    """Cancel a running ensemble backtest."""
+    data = request.get_json()
+    session_id = data.get('session_id')
+    session = ensemble_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    session.cancel()
+    return jsonify({'status': 'cancelling'})
+
+
 # ======================================================================
 # Compare Routes
 # ======================================================================
@@ -930,6 +968,7 @@ def compare_page():
 # Global stores for compare sessions and loaded predictors
 compare_sessions = {}
 compare_predictors = {}
+ensemble_sessions = {}
 
 # Live trading manager
 if LIVE_AVAILABLE:
@@ -1069,6 +1108,132 @@ def compare_results():
         return jsonify({'error': f'Session not completed yet. Status: {session.status}'}), 400
 
     return jsonify(session.results)
+
+
+# ======================================================================
+# Ensemble Backtest Routes
+# ======================================================================\n
+@app.route('/api/ensemble/load-model', methods=['POST'])
+def ensemble_load_model():
+    """Load a model into the ensemble pool (reuses compare_predictors store)."""
+    return compare_load_model()
+
+@app.route('/api/ensemble/run', methods=['POST'])
+def ensemble_run():
+    """Start an ensemble backtest session."""
+    global ensemble_sessions, compare_predictors
+
+    if not BACKTEST_AVAILABLE:
+        return jsonify({'error': 'Backtest engine not available'}), 400
+
+    data = request.get_json()
+    model_keys = data.get('models', [])
+    params = data.get('params', {})
+    strict_consensus = data.get('strict_consensus', False)
+    params['strict_consensus'] = strict_consensus
+
+    if len(model_keys) != 2:
+        return jsonify({'error': 'Exactly 2 models are required for ensemble'}), 400
+
+    for mk in model_keys:
+        if mk not in compare_predictors:
+            return jsonify({'error': f'Model {mk} is not loaded'}), 400
+
+    file_path = params.get('file_path')
+    if not file_path:
+        return jsonify({'error': 'File path is required'}), 400
+
+    df, error = load_data_file(file_path)
+    if error:
+        return jsonify({'error': error}), 400
+
+    required_data = params.get('lookback', 400) + params.get('pred_len', 120)
+    if len(df) < required_data:
+        return jsonify({'error': f'Insufficient data: need {required_data}, got {len(df)}'}), 400
+
+    # Enrich params with symbol/timeframe/log_dir for JSONL logging
+    if BACKTEST_LOGGER_AVAILABLE:
+        params['symbol'] = detect_symbol_from_path(file_path)
+        params['timeframe'] = detect_timeframe_from_path(file_path)
+        params['log_dir'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+
+    now = datetime.datetime.now()
+    expired = [sid for sid, sess in ensemble_sessions.items()
+               if hasattr(sess, 'created_at') and (now - sess.created_at).total_seconds() > 7200]
+    for sid in expired:
+        del ensemble_sessions[sid]
+
+    session_id = str(uuid.uuid4())
+    predictors = {mk: compare_predictors[mk]['predictor'] for mk in model_keys}
+    session = EnsembleSession(df, predictors, params)
+    session.created_at = now
+    ensemble_sessions[session_id] = session
+
+    thread = threading.Thread(target=session.run, daemon=True)
+    thread.start()
+
+    return jsonify({'session_id': session_id, 'status': 'started'})
+
+@app.route('/api/ensemble/progress')
+def ensemble_progress():
+    """Get progress of a running ensemble session."""
+    session_id = request.args.get('session_id')
+    session = ensemble_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    return jsonify({
+        'status': session.status,
+        'progress': session.progress,
+        'current_step': session.current_step,
+        'total_steps': session.total_steps,
+    })
+
+@app.route('/api/ensemble/results')
+def ensemble_results():
+    """Get results of a completed ensemble session."""
+    session_id = request.args.get('session_id')
+    session = ensemble_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    if session.status != 'completed':
+        return jsonify({'error': f'Session not completed yet. Status: {session.status}'}), 400
+
+    results = session.results
+    charts = {
+        'equity_curve': create_equity_chart(results),
+        'drawdown': create_drawdown_chart(results),
+        'price_trades': create_price_trades_chart(results),
+    }
+    trades_json = []
+    for t in results['trades']:
+        trade = {
+            'type': t['type'],
+            'timestamp': t['timestamp'],
+            'price': t['price'],
+            'shares': t['shares'],
+        }
+        if t['type'] == 'sell':
+            trade['pnl'] = t['pnl']
+            trade['return_pct'] = t['return_pct']
+            trade['entry_price'] = t.get('entry_price')
+            trade['entry_time'] = t.get('entry_time')
+            trade['exit_reason'] = t.get('exit_reason', 'signal')
+        trades_json.append(trade)
+
+    resp = {
+        'metrics': results['metrics'],
+        'charts': charts,
+        'trades': trades_json,
+    }
+    if 'consensus_metrics' in results:
+        resp['consensus_metrics'] = results['consensus_metrics']
+    if 'ensemble_models' in results:
+        resp['ensemble_models'] = results['ensemble_models']
+    return jsonify(resp)
 
 
 # ======================================================================
@@ -1242,6 +1407,138 @@ def live_sessions_archive():
 
     sessions = read_log_file(str(summary_path), limit=500)
     return jsonify({'sessions': list(reversed(sessions))})
+
+
+# ======================================================================
+# Polymarket Backtest Routes
+# ======================================================================
+
+@app.route('/polymarket-backtest')
+def polymarket_backtest_page():
+    """Render the Polymarket backtest page."""
+    return render_template('polymarket_backtest.html')
+
+
+@app.route('/api/polymarket-backtest/start', methods=['POST'])
+def polymarket_backtest_start():
+    """Start a Polymarket backtest session."""
+    global predictor
+
+    if not MODEL_AVAILABLE or predictor is None:
+        return jsonify({'error': 'Model not loaded. Please load a model first.'}), 400
+
+    if not POLYMARKET_BACKTEST_AVAILABLE:
+        return jsonify({'error': 'Polymarket backtest engine not available.'}), 400
+
+    data = request.get_json()
+    price_file = data.get('price_file')
+    pm_file = data.get('polymarket_file')
+
+    if not price_file or not pm_file:
+        return jsonify({'error': 'Both price and Polymarket data files are required.'}), 400
+
+    # Load price data
+    df_price, error = load_data_file(price_file)
+    if error:
+        return jsonify({'error': f'Price data: {error}'}), 400
+    
+    # Ensure timestamps column exists (use index if needed)
+    if "timestamps" not in df_price.columns and df_price.index.name == "timestamp":
+        df_price = df_price.reset_index()
+    elif "timestamps" not in df_price.columns and df_price.index.name != "timestamp":
+        df_price["timestamps"] = df_price.index
+
+    # Load Polymarket data (special handling - different columns)
+    try:
+        df_pm = pd.read_parquet(pm_file)
+        # Convert timestamps if needed
+        if "event_start_ts" in df_pm.columns:
+            df_pm = df_pm.sort_values("event_start_ts").reset_index(drop=True)
+    except Exception as e:
+        return jsonify({'error': f'Polymarket data: {str(e)}'}), 400
+
+    params = {
+        'lookback': int(data.get('lookback', 120)),
+        'pred_len': int(data.get('pred_len', 1)),
+        'signal_threshold': float(data.get('signal_threshold', 0.0003)),
+        'bet_amount': float(data.get('bet_amount', 1.0)),
+        'initial_capital': float(data.get('initial_capital', 10000)),
+        'fee_pct': data.get('fee_pct', 0.02),
+        'temperature': float(data.get('temperature', 0.1)),
+        'top_p': float(data.get('top_p', 1.0)),
+        'sample_count': int(data.get('sample_count', 1)),
+        'start_date': data.get('start_date'),
+        'end_date': data.get('end_date'),
+        'model_key': data.get('model_key', 'unknown'),
+    }
+
+    session_id = str(uuid.uuid4())
+    session = PolymarketBacktestSession(df_price, df_pm, predictor, params)
+    polymarket_backtest_sessions[session_id] = session
+
+    thread = threading.Thread(target=session.run, daemon=True)
+    thread.start()
+
+    return jsonify({'session_id': session_id, 'status': 'started'})
+
+
+@app.route('/api/polymarket-backtest/progress')
+def polymarket_backtest_progress():
+    """Get progress of a running Polymarket backtest."""
+    session_id = request.args.get('session_id')
+    session = polymarket_backtest_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    return jsonify({
+        'progress': session.progress,
+        'status': session.status,
+        'error_message': session.error_message,
+        'current_step': session.current_step,
+        'total_steps': session.total_steps,
+    })
+
+
+@app.route('/api/polymarket-backtest/results')
+def polymarket_backtest_results():
+    """Get results of a completed Polymarket backtest."""
+    session_id = request.args.get('session_id')
+    session = polymarket_backtest_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    if session.status != 'completed':
+        return jsonify({'error': f'Session not completed yet. Status: {session.status}'}), 400
+
+    results = session.results
+
+    charts = {
+        'equity_curve': create_equity_chart(results),
+        'drawdown': create_drawdown_chart(results),
+        'bets': create_bets_chart(results),
+    }
+
+    return jsonify({
+        'metrics': results['metrics'],
+        'charts': charts,
+        'bets': results['bets'],
+    })
+
+
+@app.route('/api/polymarket-backtest/cancel', methods=['POST'])
+def polymarket_backtest_cancel():
+    """Cancel a running Polymarket backtest."""
+    data = request.get_json()
+    session_id = data.get('session_id')
+    session = polymarket_backtest_sessions.get(session_id)
+
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    session.cancel()
+    return jsonify({'status': 'cancelling'})
 
 
 # ======================================================================

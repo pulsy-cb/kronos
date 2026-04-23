@@ -128,9 +128,31 @@
                 <h2>Control Panel</h2>
 
                 <div class="form-group">
+                    <label for="mode-select">Mode:</label>
+                    <select id="mode-select">
+                        <option value="single">Single Model</option>
+                        <option value="ensemble">Ensemble (2 models)</option>
+                    </select>
+                    <small class="form-text">Single model backtest or ensemble consensus</small>
+                </div>
+                <div class="form-group">
                     <label for="model-select">Select Model:</label>
                     <select id="model-select"><option value="">Load available models first</option></select>
                     <small class="form-text">Select the Kronos model to use</small>
+                </div>
+                <div id="ensemble-options" style="display:none;">
+                    <div class="form-group">
+                        <label for="ensemble-model-a">Model A:</label>
+                        <select id="ensemble-model-a"><option value="">Select model A</option></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="ensemble-model-b">Model B:</label>
+                        <select id="ensemble-model-b"><option value="">Select model B</option></select>
+                    </div>
+                    <div class="form-group">
+                        <input type="checkbox" id="strict-consensus" checked>
+                        <label for="strict-consensus" style="display:inline; font-weight:normal;">Strict consensus (only trade when both agree AND both exceed threshold)</label>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label for="device-select">Device:</label>
@@ -177,54 +199,54 @@
                     <label for="preset-select">Timeframe Preset:</label>
                     <select id="preset-select">
                         <option value="auto">Auto (detect from data)</option>
-                        <option value="M1">M1 — 1 min (lookback=480, pred=30, step=30)</option>
-                        <option value="M5">M5 — 5 min (lookback=400, pred=120, step=60)</option>
-                        <option value="M15">M15 — 15 min (lookback=400, pred=120, step=60)</option>
-                        <option value="H1">H1 — 1 hour (lookback=400, pred=48, step=24)</option>
-                        <option value="H4">H4 — 4 hours (lookback=200, pred=48, step=24)</option>
-                        <option value="D1">D1 — 1 day (lookback=200, pred=30, step=10)</option>
+                        <option value="M1">M1 — 1 min (scalping: lb=120, pred=1, step=1)</option>
+                        <option value="M5">M5 — 5 min (scalping: lb=120, pred=1, step=1)</option>
+                        <option value="M15">M15 — 15 min (lb=200, pred=2, step=2)</option>
+                        <option value="H1">H1 — 1 hour (lb=200, pred=4, step=4)</option>
+                        <option value="H4">H4 — 4 hours (lb=200, pred=4, step=4)</option>
+                        <option value="D1">D1 — 1 day (lb=200, pred=5, step=5)</option>
                         <option value="custom">Custom</option>
                     </select>
                     <small class="form-text">Auto-detects timeframe from data or set manually</small>
                 </div>
                 <div class="form-group">
                     <label for="lookback">Lookback:</label>
-                    <input type="number" id="lookback" value="400" min="50" max="2048">
-                    <small class="form-text">Historical window — <span id="lookback-info">M5: ~1.4 days</span></small>
+                    <input type="number" id="lookback" value="120" min="10" max="2048">
+                    <small class="form-text">Historical window — <span id="lookback-info">M5: ~1 hour</span></small>
                 </div>
                 <div class="form-group">
                     <label for="pred-len">Prediction Length:</label>
-                    <input type="number" id="pred-len" value="120" min="10" max="512">
-                    <small class="form-text">Future steps — <span id="pred-info">M5: ~10 hours</span></small>
+                    <input type="number" id="pred-len" value="1" min="1" max="512">
+                    <small class="form-text">Future steps — <span id="pred-info">M5: ~5 min</span></small>
                 </div>
                 <div class="form-group">
                     <label for="step-size">Step Size:</label>
-                    <input type="number" id="step-size" value="60" min="10" max="500">
+                    <input type="number" id="step-size" value="1" min="1" max="500">
                     <small class="form-text">Advance window by this many bars</small>
                 </div>
                 <div class="form-group">
                     <label for="signal-threshold">Entry Threshold (%):</label>
-                    <input type="number" id="signal-threshold" value="0.5" min="0.01" max="10" step="0.01">
+                    <input type="number" id="signal-threshold" value="0.03" min="0.001" max="10" step="0.001">
                     <small class="form-text">Min predicted return to enter a trade</small>
                 </div>
                 <div class="form-group">
                     <label for="exit-threshold">Exit Threshold (%):</label>
-                    <input type="number" id="exit-threshold" value="0.25" min="0.01" max="10" step="0.01">
+                    <input type="number" id="exit-threshold" value="0.02" min="0.001" max="10" step="0.001">
                     <small class="form-text">Predicted return below this to signal exit</small>
                 </div>
                 <div class="form-group">
                     <label for="stop-loss">Stop-Loss (%):</label>
-                    <input type="number" id="stop-loss" value="0.15" min="0" max="10" step="0.01">
+                    <input type="number" id="stop-loss" value="0.1" min="0" max="10" step="0.01">
                     <small class="form-text">0 = disabled. Auto-sell if loss exceeds this</small>
                 </div>
                 <div class="form-group">
                     <label for="take-profit">Take-Profit (%):</label>
-                    <input type="number" id="take-profit" value="0.3" min="0" max="20" step="0.01">
+                    <input type="number" id="take-profit" value="0.2" min="0" max="20" step="0.01">
                     <small class="form-text">0 = disabled. Auto-sell if profit exceeds this</small>
                 </div>
                 <div class="form-group">
                     <label for="max-hold">Max Hold (bars):</label>
-                    <input type="number" id="max-hold" value="0" min="0" max="99999" step="1">
+                    <input type="number" id="max-hold" value="5" min="0" max="99999" step="1">
                     <small class="form-text">0 = disabled. Force-sell after N bars</small>
                 </div>
                 <div class="form-group">
@@ -241,13 +263,13 @@
 
                 <div class="form-group">
                     <label for="temperature">Temperature:</label>
-                    <input type="range" id="temperature" value="1.0" min="0.1" max="2.0" step="0.1">
-                    <span id="temperature-value">1.0</span>
+                    <input type="range" id="temperature" value="0.1" min="0.01" max="2.0" step="0.01">
+                    <span id="temperature-value">0.1</span>
                 </div>
                 <div class="form-group">
                     <label for="top-p">Top-p:</label>
-                    <input type="range" id="top-p" value="0.9" min="0.1" max="1.0" step="0.05">
-                    <span id="top-p-value">0.9</span>
+                    <input type="range" id="top-p" value="1.0" min="0.1" max="1.0" step="0.05">
+                    <span id="top-p-value">1.0</span>
                 </div>
                 <div class="form-group">
                     <label for="sample-count">Sample Count:</label>
@@ -331,18 +353,18 @@
 
         // Preset configurations: lookback, pred_len, step_size, and human-readable hints
         const PRESETS = {
-            'M1':  { lookback: 480, pred_len: 30,  step_size: 30,  lb_hint: '~8 hours',   pred_hint: '~30 min',
-                     entry_threshold: 0.08, exit_threshold: 0.05, stop_loss: 0.25, take_profit: 0.5, max_hold: 120 },
-            'M5':  { lookback: 400, pred_len: 120, step_size: 60,  lb_hint: '~1.4 days',  pred_hint: '~10 hours',
-                     entry_threshold: 0.12, exit_threshold: 0.07, stop_loss: 0.35, take_profit: 0.7, max_hold: 144 },
-            'M15': { lookback: 400, pred_len: 120, step_size: 60,  lb_hint: '~4 days',    pred_hint: '~30 hours',
-                     entry_threshold: 0.20, exit_threshold: 0.12, stop_loss: 0.50, take_profit: 1.0, max_hold: 64 },
-            'H1':  { lookback: 400, pred_len: 48,  step_size: 24,  lb_hint: '~16 days',   pred_hint: '~2 days',
-                     entry_threshold: 0.30, exit_threshold: 0.15, stop_loss: 0.80, take_profit: 1.5, max_hold: 48 },
-            'H4':  { lookback: 200, pred_len: 48,  step_size: 24,  lb_hint: '~33 days',   pred_hint: '~8 days',
-                     entry_threshold: 0.50, exit_threshold: 0.25, stop_loss: 1.20, take_profit: 2.5, max_hold: 24 },
-            'D1':  { lookback: 200, pred_len: 30,  step_size: 10,  lb_hint: '~200 days',  pred_hint: '~30 days',
-                     entry_threshold: 1.00, exit_threshold: 0.50, stop_loss: 2.00, take_profit: 4.0, max_hold: 15 },
+            'M1':  { lookback: 120, pred_len: 1,  step_size: 1,  lb_hint: '~2 hours',   pred_hint: '~1 min',
+                     entry_threshold: 0.03, exit_threshold: 0.02, stop_loss: 0.1, take_profit: 0.2, max_hold: 5 },
+            'M5':  { lookback: 120, pred_len: 1,  step_size: 1,  lb_hint: '~10 hours',  pred_hint: '~5 min',
+                     entry_threshold: 0.03, exit_threshold: 0.02, stop_loss: 0.1, take_profit: 0.2, max_hold: 5 },
+            'M15': { lookback: 200, pred_len: 2,  step_size: 2,  lb_hint: '~2 days',    pred_hint: '~30 min',
+                     entry_threshold: 0.10, exit_threshold: 0.05, stop_loss: 0.3, take_profit: 0.6, max_hold: 20 },
+            'H1':  { lookback: 200, pred_len: 4,  step_size: 4,  lb_hint: '~8 days',    pred_hint: '~4 hours',
+                     entry_threshold: 0.20, exit_threshold: 0.10, stop_loss: 0.5, take_profit: 1.0, max_hold: 24 },
+            'H4':  { lookback: 200, pred_len: 4,  step_size: 4,  lb_hint: '~33 days',   pred_hint: '~16 hours',
+                     entry_threshold: 0.40, exit_threshold: 0.20, stop_loss: 0.8, take_profit: 1.6, max_hold: 12 },
+            'D1':  { lookback: 200, pred_len: 5,  step_size: 5,  lb_hint: '~200 days',  pred_hint: '~5 days',
+                     entry_threshold: 0.80, exit_threshold: 0.40, stop_loss: 1.5, take_profit: 3.0, max_hold: 10 },
         };
 
         // Regex map for auto-detecting timeframe from the data frequency string
@@ -413,6 +435,10 @@
                     const models = resp.data.models;
                     const sel = document.getElementById('model-select');
                     sel.innerHTML = '<option value="">Select model</option>';
+                    const enA = document.getElementById('ensemble-model-a');
+                    const enB = document.getElementById('ensemble-model-b');
+                    enA.innerHTML = '<option value="">Select model A</option>';
+                    enB.innerHTML = '<option value="">Select model B</option>';
                     Object.entries(models).forEach(function(entry) {
                         const key = entry[0];
                         const m = entry[1];
@@ -420,6 +446,16 @@
                         opt.value = key;
                         opt.textContent = m.name + ' (' + m.params + ') — ' + m.description;
                         sel.appendChild(opt);
+
+                        const optA = document.createElement('option');
+                        optA.value = key;
+                        optA.textContent = m.name;
+                        enA.appendChild(optA);
+
+                        const optB = document.createElement('option');
+                        optB.value = key;
+                        optB.textContent = m.name;
+                        enB.appendChild(optB);
                     });
                 } else {
                     showStatus('warning', 'Kronos model library not available');
@@ -510,7 +546,14 @@
 
         async function startBacktest() {
             if (!currentDataFile) { showStatus('error', 'Load data first'); return; }
-            if (!modelLoaded) { showStatus('error', 'Load model first'); return; }
+            const mode = document.getElementById('mode-select').value;
+            if (mode !== 'ensemble' && !modelLoaded) { showStatus('error', 'Load model first'); return; }
+            if (mode === 'ensemble') {
+                const ma = document.getElementById('ensemble-model-a').value;
+                const mb = document.getElementById('ensemble-model-b').value;
+                if (!ma || !mb) { showStatus('error', 'Select both models for ensemble'); return; }
+                if (ma === mb) { showStatus('error', 'Select two different models'); return; }
+            }
 
             const params = {
                 file_path: currentDataFile,
@@ -540,7 +583,23 @@
                 document.getElementById('placeholder').style.display = 'none';
                 document.getElementById('results').style.display = 'none';
 
-                const resp = await axios.post('/api/backtest/start', params);
+                let resp;
+                if (mode === 'ensemble') {
+                    const models = [
+                        document.getElementById('ensemble-model-a').value,
+                        document.getElementById('ensemble-model-b').value,
+                    ];
+                    const strict = document.getElementById('strict-consensus').checked;
+                    // Load models into ensemble pool if not already loaded
+                    for (const mk of models) {
+                        await axios.post('/api/ensemble/load-model', { model_key: mk, device: document.getElementById('device-select').value });
+                    }
+                    resp = await axios.post('/api/ensemble/run', { models, params, strict_consensus: strict });
+                } else {
+                    params.model_key = document.getElementById('model-select').value || '';
+                    params.model_name = document.getElementById('model-select').selectedOptions[0]?.text || '';
+                    resp = await axios.post('/api/backtest/start', params);
+                }
                 if (resp.data.session_id) {
                     currentSessionId = resp.data.session_id;
                     startProgressPolling();
@@ -557,17 +616,23 @@
         async function cancelBacktest() {
             if (!currentSessionId) return;
             try {
-                await axios.post('/api/backtest/cancel', { session_id: currentSessionId });
+                const prefix = getModeApiPrefix();
+                await axios.post(prefix + '/cancel', { session_id: currentSessionId });
             } catch (e) { /* ignore */ }
             stopProgressPolling();
             resetUI();
             showStatus('warning', 'Backtest cancelled');
         }
 
+        function getModeApiPrefix() {
+            return document.getElementById('mode-select').value === 'ensemble' ? '/api/ensemble' : '/api/backtest';
+        }
+
         function startProgressPolling() {
             progressInterval = setInterval(async function() {
                 try {
-                    const resp = await axios.get('/api/backtest/progress?session_id=' + currentSessionId);
+                    const prefix = getModeApiPrefix();
+                    const resp = await axios.get(prefix + '/progress?session_id=' + currentSessionId);
                     const d = resp.data;
                     document.getElementById('progress-fill').style.width = (d.progress * 100) + '%';
                     document.getElementById('progress-text').textContent =
@@ -599,7 +664,8 @@
 
         async function fetchResults() {
             try {
-                const resp = await axios.get('/api/backtest/results?session_id=' + currentSessionId);
+                const prefix = getModeApiPrefix();
+                const resp = await axios.get(prefix + '/results?session_id=' + currentSessionId);
                 displayResults(resp.data);
                 showStatus('success', 'Backtest completed!');
                 resetUI();
@@ -640,6 +706,34 @@
                 grid.appendChild(card);
             });
 
+            if (data.consensus_metrics) {
+                var cm = data.consensus_metrics;
+                var consensusList = [
+                    { label: 'Both Long', value: String(cm.signal_counts.both_long) },
+                    { label: 'Both Short', value: String(cm.signal_counts.both_short) },
+                    { label: 'Both Neutral', value: String(cm.signal_counts.both_neutral) },
+                    { label: 'Disagree Dir', value: String(cm.signal_counts.disagree_dir) },
+                    { label: 'One Active', value: String(cm.signal_counts.one_active) },
+                    { label: 'Consensus WR', value: cm.win_rate + '%', positive: cm.win_rate > 50 },
+                    { label: 'Consensus PnL', value: '$' + cm.pnl.toLocaleString(), positive: cm.pnl > 0 },
+                    { label: 'Consensus Trades', value: String(cm.trade_count) },
+                ];
+                consensusList.forEach(function(mt) {
+                    var card = document.createElement('div');
+                    card.className = 'metric-card';
+                    card.style.background = '#fef5e7';
+                    var valueEl = document.createElement('div');
+                    valueEl.className = 'metric-value' + (mt.positive === null ? '' : mt.positive ? ' positive' : ' negative');
+                    valueEl.textContent = mt.value;
+                    var labelEl = document.createElement('div');
+                    labelEl.className = 'metric-label';
+                    labelEl.textContent = mt.label;
+                    card.appendChild(valueEl);
+                    card.appendChild(labelEl);
+                    grid.appendChild(card);
+                });
+            }
+
             Plotly.newPlot('equity-chart', JSON.parse(data.charts.equity_curve).data, JSON.parse(data.charts.equity_curve).layout);
             Plotly.newPlot('drawdown-chart', JSON.parse(data.charts.drawdown).data, JSON.parse(data.charts.drawdown).layout);
             Plotly.newPlot('price-chart', JSON.parse(data.charts.price_trades).data, JSON.parse(data.charts.price_trades).layout);
@@ -677,7 +771,16 @@
         }
 
         function updateStartButton() {
-            document.getElementById('start-btn').disabled = !(modelLoaded && currentDataFile);
+            const mode = document.getElementById('mode-select').value;
+            let ready = false;
+            if (mode === 'ensemble') {
+                const ma = document.getElementById('ensemble-model-a').value;
+                const mb = document.getElementById('ensemble-model-b').value;
+                ready = !!(ma && mb && currentDataFile);
+            } else {
+                ready = !!(modelLoaded && currentDataFile);
+            }
+            document.getElementById('start-btn').disabled = !ready;
         }
 
         function resetUI() {
@@ -707,6 +810,14 @@
             document.getElementById('load-data-btn').addEventListener('click', loadData);
             document.getElementById('start-btn').addEventListener('click', startBacktest);
             document.getElementById('cancel-btn').addEventListener('click', cancelBacktest);
+            document.getElementById('mode-select').addEventListener('change', function() {
+                const isEnsemble = this.value === 'ensemble';
+                document.getElementById('ensemble-options').style.display = isEnsemble ? 'block' : 'none';
+                document.getElementById('start-btn').textContent = isEnsemble ? 'Start Ensemble Backtest' : 'Start Backtest';
+                updateStartButton();
+            });
+            document.getElementById('ensemble-model-a').addEventListener('change', updateStartButton);
+            document.getElementById('ensemble-model-b').addEventListener('change', updateStartButton);
             document.getElementById('temperature').addEventListener('input', function() {
                 document.getElementById('temperature-value').textContent = this.value;
             });

@@ -28,6 +28,38 @@ TF_MAP = {
     "D1": mt5.TIMEFRAME_D1,
 }
 
+# Suffixes courants ajoutes par les brokers MT5
+COMMON_SUFFIXES = [".i", "m", ".m", ".c", "c", ".r", "r", ".ecn", ".pro", ".std"]
+
+
+def resolve_mt5_symbol(symbol):
+    """
+    Resout le nom exact d'un symbole dans MT5.
+    Si le symbole exact existe, le retourne.
+    Sinon essaie avec les suffixes courants (.i, m, c, etc.)
+    Retourne le symbole original si aucun n'est trouve.
+    """
+    if not symbol:
+        return symbol
+    # Verifie le symbole exact
+    info = mt5.symbol_info(symbol)
+    if info is not None:
+        return symbol
+    # Essaie avec les suffixes
+    for suffix in COMMON_SUFFIXES:
+        candidate = symbol + suffix
+        info = mt5.symbol_info(candidate)
+        if info is not None:
+            return candidate
+    # Essaie aussi sans suffixe si l'utilisateur a entre un symbole avec suffixe
+    for suffix in COMMON_SUFFIXES:
+        if symbol.endswith(suffix):
+            candidate = symbol[:-len(suffix)]
+            info = mt5.symbol_info(candidate)
+            if info is not None:
+                return candidate
+    return symbol
+
 
 class MT5LiveFeed(BrokerFeed):
     """Flux de donnees en temps reel depuis MT5."""
@@ -134,6 +166,7 @@ class MT5LiveFeed(BrokerFeed):
         """Retourne les infos d'un symbole."""
         if not self._connected:
             return None
+        symbol = resolve_mt5_symbol(symbol)
         info = mt5.symbol_info(symbol)
         if info is None:
             return None
@@ -154,6 +187,7 @@ class MT5LiveFeed(BrokerFeed):
         """Retourne le tick actuel (bid/ask) pour un symbole."""
         if not self._connected:
             return None
+        symbol = resolve_mt5_symbol(symbol)
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
             return None
@@ -178,6 +212,12 @@ class MT5LiveFeed(BrokerFeed):
             return None, f"Timeframe inconnu: {timeframe}. Disponibles: {list(TF_MAP.keys())}"
 
         tf_mt5 = TF_MAP[timeframe]
+        symbol = resolve_mt5_symbol(symbol)
+
+        # S'assure que le symbole est dans le Market Watch
+        info = mt5.symbol_info(symbol)
+        if info is not None and not info.visible:
+            mt5.symbol_select(symbol, True)
 
         rates = mt5.copy_rates_from_pos(symbol, tf_mt5, 0, count)
         if rates is None or len(rates) == 0:
@@ -212,6 +252,8 @@ class MT5LiveFeed(BrokerFeed):
         if tf_mt5 is None:
             return None, False
 
+        symbol = resolve_mt5_symbol(symbol)
+
         while True:
             rates = mt5.copy_rates_from_pos(symbol, tf_mt5, 0, 2)
             if rates is None or len(rates) < 2:
@@ -233,6 +275,7 @@ class MT5LiveFeed(BrokerFeed):
         if not self._connected:
             return []
         if symbol:
+            symbol = resolve_mt5_symbol(symbol)
             positions = mt5.positions_get(symbol=symbol)
         else:
             positions = mt5.positions_get()
@@ -260,6 +303,7 @@ class MT5LiveFeed(BrokerFeed):
         if not self._connected:
             return []
         if symbol:
+            symbol = resolve_mt5_symbol(symbol)
             orders = mt5.orders_get(symbol=symbol)
         else:
             orders = mt5.orders_get()
@@ -283,6 +327,8 @@ class MT5LiveFeed(BrokerFeed):
         """Retourne l'historique des trades."""
         if not self._connected:
             return []
+        if symbol:
+            symbol = resolve_mt5_symbol(symbol)
         to_date = datetime.now()
         from_date = to_date - timedelta(days=days)
         deals = mt5.history_deals_get(from_date, to_date)
