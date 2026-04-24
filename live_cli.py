@@ -509,23 +509,69 @@ class Polymarket5MinTracker:
             return None
 
     def _get_clob_price(self, token_id):
-        """Récupère le prix CLOB pour un token donné."""
+        """Récupère le prix CLOB pour un token donné via l'order book (prix ask = prix d'achat)."""
         if not token_id:
             return None
         try:
             resp = self._get_session().get(
-                "https://clob.polymarket.com/price",
-                params={"token_id": token_id, "side": "buy"},
+                f"https://clob.polymarket.com/book?token_id={token_id}",
                 timeout=5,
             )
             if resp.status_code == 200:
-                price = float(resp.json().get("price", 0))
+                book = resp.json()
+                bids = book.get("bids", [])
+                asks = book.get("asks", [])
+                best_bid = float(bids[0]["price"]) if bids else None
+                best_ask = float(asks[0]["price"]) if asks else None
+                # Use ask price as buy price (more conservative / realistic)
+                price = best_ask if best_ask is not None else best_bid
                 if self.logger:
-                    self.logger.debug(f"[PM] CLOB price | token={token_id[:16]}... | price={price:.4f}")
+                    self.logger.debug(
+                        f"[PM] CLOB price | token={token_id[:16]}... | "
+                        f"ask={best_ask:.4f} | bid={best_bid:.4f} | used={price:.4f}"
+                    )
                 return price
         except Exception:
             pass
         return None
+
+    def _get_winner_from_api(self, slug):
+        """
+        Requête l'API Polymarket pour connaître le token vainqueur du marché.
+        Retourne 'UP', 'DOWN', ou None si indisponible.
+        """
+        try:
+            resp = self._get_session().get(
+                "https://gamma-api.polymarket.com/events",
+                params={"slug": slug},
+                timeout=10,
+            )
+            if resp.status_code != 200 or not resp.json():
+                return None
+
+            event = resp.json()[0]
+            for m in event.get("markets", []):
+                winner = m.get("winner", "")
+                tokens_str = m.get("clobTokenIds", "[]")
+                outcomes_str = m.get("outcomes", "[]")
+                try:
+                    tokens = json.loads(tokens_str) if isinstance(tokens_str, str) else tokens_str
+                    outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+                if winner and tokens:
+                    # Find which outcome the winning token belongs to
+                    for i, tid in enumerate(tokens):
+                        if tid.lower() == winner.lower() and i < len(outcomes):
+                            outcome = str(outcomes[i]).upper()
+                            if "UP" in outcome:
+                                return "UP"
+                            elif "DOWN" in outcome:
+                                return "DOWN"
+            return None
+        except Exception:
+            return None
 
     def _get_m5_candle(self, symbol, window_ts):
         """
@@ -678,31 +724,45 @@ class Polymarket5MinTracker:
 
             symbol = pos["symbol"]
             window_ts = pos["window_start_ts"]
+            pm_slug = pos.get("pm_slug", "")
 
-            # Try to get the exact M5 candle for this window
-            candle_open, candle_close = self._get_m5_candle(symbol, window_ts)
-
-            if candle_open is not None and candle_close is not None:
-                actual_direction = "UP" if candle_close > candle_open else "DOWN"
-                settlement_source = "m5_candle"
+            # 1) Try to get the official winner from Polymarket API
+            api_winner = self._get_winner_from_api(pm_slug) if pm_slug else None
+            if api_winner:
+                actual_direction = api_winner
+                settlement_source = "polymarket_api"
+                candle_open = candle_close = None  # not needed
                 if self.logger:
                     self.logger.info(
-                        f"[PM] Settlement (candle) | symbol={symbol} | window={window_ts} | "
-                        f"open={candle_open:.2f} | close={candle_close:.2f} | "
-                        f"actual={actual_direction}"
+                        f"[PM] Settlement (Polymarket API) | symbol={symbol} | "
+                        f"slug={pm_slug} | actual={actual_direction}"
                     )
             else:
-                # Fallback: use current price vs entry price (approximate)
-                entry_price = pos["current_price"]
-                current_price = current_prices.get(symbol, entry_price)
-                actual_direction = "UP" if current_price > entry_price else "DOWN"
-                settlement_source = "fallback"
-                if self.logger:
-                    self.logger.warning(
-                        f"[PM] Settlement (fallback) | symbol={symbol} | window={window_ts} | "
-                        f"entry={entry_price:.2f} | current={current_price:.2f} | "
-                        f"actual={actual_direction}"
-                    )
+                # 2) Fallback: get the exact M5 candle for this window
+                candle_open, candle_close = self._get_m5_candle(symbol, window_ts)
+
+                if candle_open is not None and candle_close is not None:
+                    actual_direction = "UP" if candle_close > candle_open else "DOWN"
+                    settlement_source = "m5_candle"
+                    if self.logger:
+                        self.logger.info(
+                            f"[PM] Settlement (candle) | symbol={symbol} | window={window_ts} | "
+                            f"open={candle_open:.2f} | close={candle_close:.2f} | "
+                            f"actual={actual_direction}"
+                        )
+                else:
+                    # 3) Last fallback: use current price vs entry price (approximate)
+                    entry_price = pos["current_price"]
+                    current_price = current_prices.get(symbol, entry_price)
+                    actual_direction = "UP" if current_price > entry_price else "DOWN"
+                    candle_open = candle_close = None  # not available
+                    settlement_source = "fallback"
+                    if self.logger:
+                        self.logger.warning(
+                            f"[PM] Settlement (fallback) | symbol={symbol} | window={window_ts} | "
+                            f"entry={entry_price:.2f} | current={current_price:.2f} | "
+                            f"actual={actual_direction}"
+                        )
 
             # Did our bet win?
             won = (pos["direction"] == actual_direction)
