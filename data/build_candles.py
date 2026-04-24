@@ -21,6 +21,7 @@ import numpy as np
 
 
 TIMEFRAMES = {
+    "S30": "30s",
     "M1":  "1min",
     "M5":  "5min",
     "M15": "15min",
@@ -121,7 +122,7 @@ def main():
     parser.add_argument("--symbol", default="XAUUSD", help="Symbol to process (default: XAUUSD)")
     parser.add_argument(
         "--timeframes", nargs="+", default=["M5"],
-        help="Timeframes to build (M1 M5 M15 M30 H1 H4 D1, or 'all')"
+        help="Timeframes to build (S30 M1 M5 M15 M30 H1 H4 D1, or 'all')"
     )
     parser.add_argument(
         "--ticks-dir", default="data/parquet/ticks",

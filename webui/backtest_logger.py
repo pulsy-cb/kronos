@@ -157,7 +157,7 @@ def detect_timeframe_from_path(file_path):
         return "?"
     name = os.path.basename(file_path)
     # Match M1, M5, M15, H1, H4, D1 etc. — use word boundary to avoid matching inside other words
-    m = re.search(r'[_\-\.](M\d+|H\d+|D\d?)\.?', name, re.IGNORECASE)
+    m = re.search(r'[_\-\.](S\d+|M\d+|H\d+|D\d?)\.?', name, re.IGNORECASE)
     if m:
         return m.group(1).upper()
     return "?"

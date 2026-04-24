@@ -118,6 +118,7 @@ def export_ticks(symbol: str, start: datetime, end: datetime,
 # ─── Candle Reconstruction from Ticks ───────────────────────
 
 RESAMPLE_MAP = {
+    "S30": "30s",
     "M1": "1min",
     "M2": "2min",
     "M3": "3min",
@@ -246,6 +247,7 @@ def export_candles(symbol: str, timeframe: str, start: datetime, end: datetime,
     Même logique que export_ticks pour la gestion de la RAM et la reprise sur erreur.
     """
     tf_map = {
+        "S30": mt5.TIMEFRAME_M1,  # pas de S30 natif MT5, fallback sur M1
         "M1": mt5.TIMEFRAME_M1,
         "M5": mt5.TIMEFRAME_M5,
         "M15": mt5.TIMEFRAME_M15,
@@ -375,7 +377,7 @@ if __name__ == "__main__":
     parser.add_argument("action", choices=["ticks", "candles", "all", "verify"],
                         help="Type d'export")
     parser.add_argument("--symbol", default="XAUUSD", help="Symbole MT5")
-    parser.add_argument("--timeframe", default="M5", help="M1, M5, M15, H1, H4, D1")
+    parser.add_argument("--timeframe", default="M5", help="S30, M1, M5, M15, H1, H4, D1")
     parser.add_argument("--start", default="2025-01-01", help="Date début YYYY-MM-DD")
     parser.add_argument("--end", default="2025-12-31", help="Date fin YYYY-MM-DD")
     parser.add_argument("--output", default="data/parquet", help="Répertoire de sortie")
