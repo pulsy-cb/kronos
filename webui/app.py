@@ -54,7 +54,7 @@ except Exception as e:
     print(f"Warning: Polymarket engine not available: {e}")
 
 try:
-    from polymarket_backtest_engine import PolymarketBacktestSession, create_equity_chart, create_drawdown_chart, create_bets_chart
+    from polymarket_backtest_engine import PolymarketBacktestSession, create_equity_chart as pm_create_equity_chart, create_drawdown_chart as pm_create_drawdown_chart, create_bets_chart
     POLYMARKET_BACKTEST_AVAILABLE = True
 except Exception as e:
     POLYMARKET_BACKTEST_AVAILABLE = False
@@ -1515,8 +1515,8 @@ def polymarket_backtest_results():
     results = session.results
 
     charts = {
-        'equity_curve': create_equity_chart(results),
-        'drawdown': create_drawdown_chart(results),
+        'equity_curve': pm_create_equity_chart(results),
+        'drawdown': pm_create_drawdown_chart(results),
         'bets': create_bets_chart(results),
     }
 

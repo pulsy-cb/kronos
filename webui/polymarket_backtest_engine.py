@@ -412,7 +412,8 @@ def create_equity_chart(results):
         return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
     
     timestamps = [e["timestamp"] for e in equity]
-    capital_values = [e["capital"] for e in equity]
+    capital_key = "capital" if "capital" in equity[0] else "portfolio_value"
+    capital_values = [e[capital_key] for e in equity]
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -452,7 +453,8 @@ def create_drawdown_chart(results):
         fig.update_layout(title="Drawdown (no data)", height=250)
         return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
     
-    capital_values = [e["capital"] for e in equity]
+    capital_key = "capital" if "capital" in equity[0] else "portfolio_value"
+    capital_values = [e[capital_key] for e in equity]
     timestamps = [e["timestamp"] for e in equity]
     
     # Calculer drawdown

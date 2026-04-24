@@ -637,8 +637,12 @@ def _calculate_metrics(trade_results, initial_capital, df):
             "buy_hold_return_pct": round(bh_return * 100, 2),
             "final_value": round(final_value, 2),
             "avg_trade_return_pct": round(avg_trade_return * 100, 2),
+            "initial_capital": round(initial_capital, 2),
         }
 
+
+# ------------------------------------------------------------------
+# Price data for chart
 # ------------------------------------------------------------------
 # Price data for chart
 # ------------------------------------------------------------------
@@ -1290,6 +1294,7 @@ class EnsembleSession:
             "buy_hold_return_pct": round(bh_return * 100, 2),
             "final_value": round(final_value, 2),
             "avg_trade_return_pct": round(avg_trade_return * 100, 2),
+            "initial_capital": round(initial_capital, 2),
         }
 
     def _prepare_price_data(self, df):
