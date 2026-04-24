@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kronos Logs Viewer</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+
+        .header { text-align: center; margin-bottom: 30px; color: white; }
+        .header h1 { font-size: 2.5rem; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
+        .header nav { margin-bottom: 15px; }
+        .header nav a { color: rgba(255,255,255,0.7); text-decoration: none; margin: 0 15px; font-size: 1rem; transition: color 0.2s; }
+        .header nav a:hover, .header nav a.active { color: white; font-weight: 600; }
+
+        .file-list {
+            background: white; border-radius: 15px; padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2); margin-bottom: 30px;
+        }
+        .file-list h2 { color: #4a5568; margin-bottom: 15px; }
+        .file-item {
+            padding: 12px 16px; border: 2px solid #e2e8f0; border-radius: 8px;
+            margin-bottom: 8px; cursor: pointer; transition: all 0.2s;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .file-item:hover { border-color: #667eea; background: #f7f8fc; }
+        .file-item.selected { border-color: #667eea; background: #eef0ff; }
+        .file-item .badge {
+            padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+        }
+        .badge-backtest { background: #bee3f8; color: #2b6cb0; }
+        .badge-live { background: #c6f6d5; color: #276749; }
+
+        .dashboard { display: none; }
+        .dashboard.active { display: block; }
+
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 15px; margin-bottom: 30px;
+        }
+        .stat-card {
+            background: white; border-radius: 12px; padding: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-align: center;
+        }
+        .stat-card .value { font-size: 1.8rem; font-weight: 700; color: #4a5568; }
+        .stat-card .label { font-size: 0.85rem; color: #a0aec0; margin-top: 4px; }
+        .stat-card.positive .value { color: #48bb78; }
+        .stat-card.negative .value { color: #f56565; }
+
+        .chart-container {
+            background: white; border-radius: 15px; padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15); margin-bottom: 30px;
+        }
+        .chart-container h3 { color: #4a5568; margin-bottom: 15px; }
+
+        .trades-table {
+            background: white; border-radius: 15px; padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15); margin-bottom: 30px;
+        }
+        .trades-table h3 { color: #4a5568; margin-bottom: 15px; }
+        .trades-table table { width: 100%; border-collapse: collapse; }
+        .trades-table th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #e2e8f0; color: #4a5568; font-size: 0.85rem; text-transform: uppercase; }
+        .trades-table td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; font-size: 0.9rem; }
+        .trades-table tr:hover td { background: #f7f8fc; }
+        .win { color: #48bb78; font-weight: 600; }
+        .loss { color: #f56565; font-weight: 600; }
+
+        .meta-info {
+            background: white; border-radius: 15px; padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15); margin-bottom: 30px;
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;
+        }
+        .meta-info .item { font-size: 0.9rem; color: #4a5568; }
+        .meta-info .item strong { color: #2d3748; }
+
+        .session-tabs {
+            display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px;
+        }
+        .session-tab {
+            padding: 8px 16px; border: 2px solid #e2e8f0; border-radius: 8px;
+            cursor: pointer; font-size: 0.85rem; transition: all 0.2s;
+            background: white;
+        }
+        .session-tab:hover { border-color: #667eea; }
+        .session-tab.active { border-color: #667eea; background: #eef0ff; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <nav>
+                <a href="/">Live</a>
+                <a href="/backtest">Backtest</a>
+                <a href="/logs" class="active">Logs</a>
+                <a href="/live">Live Trading</a>
+            </nav>
+            <h1>Logs Viewer</h1>
+            <p>Consultez les résultats de vos backtests et sessions live</p>
+        </div>
+
+        <div class="file-list">
+            <h2>Fichiers de logs</h2>
+            <div id="fileList"></div>
+        </div>
+
+        <div class="dashboard" id="dashboard">
+            <div class="session-tabs" id="sessionTabs"></div>
+            <div class="meta-info" id="metaInfo"></div>
+
+            <div class="stats-grid" id="statsGrid"></div>
+
+            <div class="chart-container">
+                <h3>Equity Curve</h3>
+                <div id="equityChart"></div>
+            </div>
+
+            <div class="chart-container">
+                <h3>P&L par Trade</h3>
+                <div id="pnlChart"></div>
+            </div>
+
+            <div class="trades-table">
+                <h3>Trades récents</h3>
+                <div style="max-height: 400px; overflow-y: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Direction</th>
+                                <th>P&L</th>
+                                <th>Raison</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tradesBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentFile = null;
+
+        async function loadFileList() {
+            const { data } = await axios.get('/api/logs');
+            const container = document.getElementById('fileList');
+            container.innerHTML = data.map(f => `
+                <div class="file-item ${f.filename === currentFile ? 'selected' : ''}"
+                     onclick="loadFile('${f.filename}')">
+                    <div>
+                        <strong>${f.filename}</strong>
+                        <span style="color:#a0aec0;font-size:0.85rem;margin-left:10px">${f.size_kb} KB</span>
+                    </div>
+                    <span class="badge badge-${f.type}">${f.type}</span>
+                </div>
+            `).join('');
+        }
+
+        async function loadFile(filename) {
+            currentFile = filename;
+            document.getElementById('dashboard').classList.add('active');
+
+            const { data } = await axios.get(`/api/logs/${filename}`);
+            window._sessions = data.sessions;
+            window._activeSession = 0;
+
+            document.getElementById('sessionTabs').innerHTML = data.sessions.map((s, i) => `
+                <div class="session-tab ${i === 0 ? 'active' : ''}" onclick="selectSession(${i})">
+                    ${s.session_id} – ${s.meta.model}
+                </div>
+            `).join('');
+
+            renderSession(0);
+            loadFileList();
+        }
+
+        function selectSession(idx) {
+            window._activeSession = idx;
+            document.querySelectorAll('.session-tab').forEach((t, i) => {
+                t.classList.toggle('active', i === idx);
+            });
+            renderSession(idx);
+        }
+
+        function renderSession(idx) {
+            const session = window._sessions[idx];
+            if (!session) return;
+            const s = session.stats;
+            const m = session.meta;
+
+            document.getElementById('metaInfo').innerHTML = `
+                <div class="item"><strong>Session:</strong> ${session.session_id}</div>
+                <div class="item"><strong>Modèle:</strong> ${m.model}</div>
+                <div class="item"><strong>Symbole:</strong> ${m.symbol}</div>
+                <div class="item"><strong>Timeframe:</strong> ${m.timeframe}</div>
+                <div class="item"><strong>Période:</strong> ${s.date_range}</div>
+            `;
+
+            document.getElementById('statsGrid').innerHTML = `
+                <div class="stat-card ${s.return_pct >= 0 ? 'positive' : 'negative'}">
+                    <div class="value">${s.return_pct >= 0 ? '+' : ''}${s.return_pct}%</div>
+                    <div class="label">Return</div>
+                </div>
+                <div class="stat-card ${s.total_pnl >= 0 ? 'positive' : 'negative'}">
+                    <div class="value">${s.total_pnl >= 0 ? '+' : ''}$${s.total_pnl}</div>
+                    <div class="label">Total P&L</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">${s.win_rate}%</div>
+                    <div class="label">Win Rate (${s.wins}/${s.total_trades})</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">${s.total_trades}</div>
+                    <div class="label">Trades</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">${s.profit_factor === 'Inf' ? '\u221e' : s.profit_factor}</div>
+                    <div class="label">Profit Factor</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">${s.avg_win}</div>
+                    <div class="label">Avg Win</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">${s.avg_loss}</div>
+                    <div class="label">Avg Loss</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">${s.start_equity} \u2192 ${s.end_equity}</div>
+                    <div class="label">Capital</div>
+                </div>
+            `;
+
+            const ec = session.equity_curve;
+            if (ec.length) {
+                const trace = {
+                    x: ec.map(e => e.timestamp), y: ec.map(e => e.equity),
+                    type: 'scatter', mode: 'lines',
+                    line: { color: '#667eea', width: 2 },
+                    fill: 'tozeroy', fillcolor: 'rgba(102,126,234,0.15)',
+                    name: 'Equity'
+                };
+                Plotly.newPlot('equityChart', [trace], {
+                    template: 'plotly_white', height: 350, margin: { t: 10, b: 40, l: 60, r: 20 },
+                    yaxis: { title: 'Equity' }, xaxis: { rangeslider: { visible: true } }
+                }, { responsive: true });
+            }
+
+            const trades = session.trades;
+            if (trades.length) {
+                const colors = trades.map(t => t.pnl >= 0 ? '#48bb78' : '#f56565');
+                Plotly.newPlot('pnlChart', [{
+                    x: trades.map(t => t.timestamp), y: trades.map(t => t.pnl),
+                    type: 'bar', marker: { color: colors }, name: 'P&L'
+                }], {
+                    template: 'plotly_white', height: 250, margin: { t: 10, b: 40, l: 60, r: 20 },
+                    yaxis: { title: 'P&L' }
+                }, { responsive: true });
+            }
+
+            document.getElementById('tradesBody').innerHTML = trades.slice(-50).reverse().map(t => `
+                <tr>
+                    <td>${t.timestamp}</td>
+                    <td>${t.direction}</td>
+                    <td class="${t.pnl >= 0 ? 'win' : 'loss'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</td>
+                    <td>${t.reason}</td>
+                </tr>
+            `).join('');
+        }
+
+        loadFileList();
+    </script>
+</body>
+</html>

@@ -14,6 +14,7 @@ import sys
 import warnings
 import datetime
 import time
+from pathlib import Path
 warnings.filterwarnings('ignore')
 
 # Add project root directory to path
@@ -1677,6 +1678,95 @@ def polymarket_history():
         return jsonify({'error': 'Session not found'}), 404
 
     return jsonify(state)
+
+
+# ─── Logs Viewer ─────────────────────────────────────────────
+
+@app.route('/logs')
+def logs_page():
+    return render_template('logs.html')
+
+
+@app.route('/api/logs')
+def api_logs():
+    logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    files = sorted([f for f in os.listdir(logs_dir) if f.endswith(".jsonl")], reverse=True)
+
+    file_list = []
+    for fname in files:
+        fpath = os.path.join(logs_dir, fname)
+        file_list.append({
+            "filename": fname,
+            "path": fpath,
+            "size_kb": round(os.path.getsize(fpath) / 1024, 1),
+            "type": "live" if fname.startswith("live_") else "backtest",
+        })
+    return jsonify(file_list)
+
+
+@app.route('/api/logs/<path:filename>')
+def api_log_data(filename):
+    logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    filepath = os.path.join(logs_dir, filename)
+    if not os.path.exists(filepath):
+        return jsonify({"error": "File not found"}), 404
+
+    events = []
+    with open(filepath, encoding="utf-8") as f:
+        for line in f:
+            events.append(json.loads(line))
+
+    # Group by session_id
+    sessions = {}
+    for e in events:
+        sid = e.get("session_id", "unknown")
+        sessions.setdefault(sid, []).append(e)
+
+    sessions_data = []
+    for sid, evts in sessions.items():
+        trades_open = [e for e in evts if e["type"] == "trade" and e["action"] == "open"]
+        trades_close = [e for e in evts if e["type"] == "trade" and e["action"] == "close"]
+        equities = [e for e in evts if e["type"] == "equity"]
+        signals = [e for e in evts if e["type"] == "signal"]
+
+        pnls = [t["pnl"] for t in trades_close if "pnl" in t]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+
+        start_equity = equities[0]["equity"] if equities else 0
+        end_equity = equities[-1]["equity"] if equities else 0
+
+        sessions_data.append({
+            "session_id": sid,
+            "meta": {
+                "symbol": trades_open[0].get("symbol", "?") if trades_open else "?",
+                "timeframe": trades_open[0].get("timeframe", "?") if trades_open else "?",
+                "model": trades_open[0].get("model_name", "?") if trades_open else "?",
+            },
+            "stats": {
+                "date_range": f"{signals[0]['timestamp'][:10] if signals else '?'} \u2192 {signals[-1]['timestamp'][:10] if signals else '?'}",
+                "total_signals": len(signals),
+                "total_trades": len(trades_open),
+                "wins": len(wins),
+                "losses": len(losses),
+                "win_rate": round(len(wins) / len(trades_close) * 100, 1) if trades_close else 0,
+                "total_pnl": round(sum(pnls), 2),
+                "avg_pnl": round(sum(pnls) / len(pnls), 2) if pnls else 0,
+                "avg_win": round(sum(wins) / len(wins), 2) if wins else 0,
+                "avg_loss": round(sum(losses) / len(losses), 2) if losses else 0,
+                "profit_factor": round(sum(wins) / abs(sum(losses)), 2) if losses and sum(losses) != 0 else float("inf"),
+                "start_equity": round(start_equity, 2),
+                "end_equity": round(end_equity, 2),
+                "return_pct": round((end_equity - start_equity) / start_equity * 100, 2) if start_equity else 0,
+            },
+            "equity_curve": [{"timestamp": e["timestamp"], "equity": e["equity"]} for e in equities],
+            "trades": [
+                {"timestamp": t["timestamp"], "pnl": t["pnl"], "direction": t.get("direction", "?"), "reason": t.get("reason", "?")}
+                for t in trades_close
+            ],
+        })
+
+    return jsonify({"sessions": sessions_data, "session_count": len(sessions_data)})
 
 
 if __name__ == '__main__':
