@@ -126,14 +126,8 @@
 
                 <div class="form-group">
                     <label>Lookback: <span id="lookbackValue">120</span></label>
-                    <input type="range" id="lookback" min="50" max="500" step="10" value="120">
+                    <input type="range" id="lookback" min="10" max="500" step="10" value="120">
                     <div class="form-text">Candles pour l'historique de prédiction</div>
-                </div>
-
-                <div class="form-group">
-                    <label>Step Size: <span id="stepValue">1</span></label>
-                    <input type="range" id="stepSize" min="1" max="12" step="1" value="1">
-                    <div class="form-text">Fenêtres à sauter (1=toutes, 6=1h, 12=2h)</div>
                 </div>
 
                 <div class="form-group">
@@ -146,6 +140,18 @@
                     <label>Signal Threshold: <span id="thresholdValue">0.0003</span></label>
                     <input type="range" id="threshold" min="0.0001" max="0.001" step="0.0001" value="0.0003">
                     <div class="form-text">Seuil minimum pour entrer en position</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Step Size: <span id="stepValue">1</span></label>
+                    <input type="range" id="stepSize" min="1" max="12" step="1" value="1">
+                    <div class="form-text">Fenêtres à sauter (1=toutes, 6=1h, 12=2h)</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Batch Size: <span id="batchValue">16</span></label>
+                    <input type="range" id="batchSize" min="1" max="64" step="1" value="16">
+                    <div class="form-text">Fenêtres traitées ensemble sur GPU (plus = rapide)</div>
                 </div>
 
                 <div class="form-group">
@@ -232,11 +238,22 @@
         // Load available files
         async function loadFiles() {
             try {
+                console.log('Loading data files...');
                 const resp = await axios.get('/api/data-files');
                 const files = resp.data;
+                console.log('Files loaded:', files.length);
                 
                 const priceSelect = document.getElementById('priceFileSelect');
                 const pmSelect = document.getElementById('pmFileSelect');
+                
+                if (!priceSelect || !pmSelect) {
+                    console.error('Select elements not found');
+                    return;
+                }
+                
+                // Clear existing options
+                priceSelect.innerHTML = '';
+                pmSelect.innerHTML = '';
                 
                 files.forEach(f => {
                     const opt1 = document.createElement('option');
@@ -254,20 +271,65 @@
                 const pmFile = files.find(f => f.name.includes('btc_5min_markets'));
                 if (pmFile) {
                     pmSelect.value = pmFile.path;
+                    console.log('Selected PM file:', pmFile.path);
+                    // Load PM data date range
+                    try {
+                        const resp = await axios.post('/api/polymarket-backtest/data-info', { file_path: pmFile.path });
+                        if (resp.data.success) {
+                            const info = resp.data;
+                            console.log('PM date range:', info);
+                            if (info.start_date && info.end_date) {
+                                document.getElementById('startDate').value = info.start_date.slice(0, 16);
+                                document.getElementById('endDate').value = info.end_date.slice(0, 16);
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Could not load PM data info:', e);
+                    }
                 }
+                
+                // Set default price file (BTC 5min)
+                const priceFileDefault = files.find(f => f.name.includes('BTCUSDT_M5'));
+                if (priceFileDefault) {
+                    priceSelect.value = priceFileDefault.path;
+                    console.log('Selected price file:', priceFileDefault.path);
+                }
+                
+                // Load price data date range via data-info (it supports price data too)
+                if (priceFileDefault) {
+                    try {
+                        const resp = await axios.post('/api/polymarket-backtest/data-info', { file_path: priceFileDefault.path });
+                        if (resp.data.success) {
+                            console.log('Price date range:', resp.data);
+                        }
+                    } catch (e) {
+                        console.warn('Could not load price data info:', e);
+                    }
+                }
+                
+                console.log('Files loaded successfully');
             } catch (e) {
                 console.error('Failed to load files:', e);
+                showStatus('Failed to load data files: ' + e.message, 'error');
             }
         }
 
         // Update slider values
-        document.getElementById('lookback').oninput = (e) => document.getElementById('lookbackValue').textContent = e.target.value;
-        document.getElementById('predLen').oninput = (e) => document.getElementById('predLenValue').textContent = e.target.value;
-        document.getElementById('threshold').oninput = (e) => document.getElementById('thresholdValue').textContent = e.target.value;
-        document.getElementById('betAmount').oninput = (e) => document.getElementById('betValue').textContent = e.target.value;
-        document.getElementById('initialCapital').oninput = (e) => document.getElementById('capitalValue').textContent = e.target.value;
-        document.getElementById('temperature').oninput = (e) => document.getElementById('tempValue').textContent = e.target.value;
-        document.getElementById('stepSize').oninput = (e) => document.getElementById('stepValue').textContent = e.target.value;
+        const setSlider = (id, valueId) => {
+            const el = document.getElementById(id);
+            const val = document.getElementById(valueId);
+            if (el && val) {
+                el.oninput = (e) => val.textContent = e.target.value;
+            }
+        };
+        setSlider('lookback', 'lookbackValue');
+        setSlider('predLen', 'predLenValue');
+        setSlider('threshold', 'thresholdValue');
+        setSlider('betAmount', 'betValue');
+        setSlider('initialCapital', 'capitalValue');
+        setSlider('temperature', 'tempValue');
+        setSlider('stepSize', 'stepValue');
+        setSlider('batchSize', 'batchValue');
 
         async function loadModel() {
             const modelKey = document.getElementById('modelSelect').value;
@@ -310,9 +372,11 @@
                 initial_capital: parseFloat(document.getElementById('initialCapital').value),
                 temperature: parseFloat(document.getElementById('temperature').value),
                 step_size: parseInt(document.getElementById('stepSize').value),
+                batch_size: parseInt(document.getElementById('batchSize').value),
                 start_date: document.getElementById('startDate').value || null,
                 end_date: document.getElementById('endDate').value || null,
             };
+            console.log('Backtest params:', params);
 
             document.getElementById('startBtn').disabled = true;
             document.getElementById('cancelBtn').classList.remove('hidden');

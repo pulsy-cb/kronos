@@ -161,10 +161,18 @@ def load_data_file(file_path):
         elif 'timestamp' in df.columns:
             df['timestamps'] = pd.to_datetime(df['timestamp'])
         elif 'date' in df.columns:
-            # If column name is 'date', rename it to 'timestamps'
             df['timestamps'] = pd.to_datetime(df['date'])
+        elif df.index.name == 'timestamp' and hasattr(df.index, 'dtype') and 'datetime' not in str(df.index.dtype):
+            # Timestamp is in the index as numeric (int64) Unix seconds
+            df['timestamps'] = pd.to_datetime(df.index, unit='s')
+        elif df.index.name == 'timestamp' and hasattr(df.index, 'dtype') and 'datetime' in str(df.index.dtype):
+            # Timestamp is in the index as datetime
+            df['timestamps'] = pd.to_datetime(df.index)
+        elif pd.api.types.is_numeric_dtype(df.index):
+            # Fallback: numeric index with no name → assume unix seconds
+            df['timestamps'] = pd.to_datetime(df.index, unit='s', errors='coerce')
         else:
-            # If no timestamp column exists, create one
+            # If no timestamp column exists, create one (last resort)
             df['timestamps'] = pd.date_range(start='2024-01-01', periods=len(df), freq='1H')
         
         # Ensure numeric columns are numeric type
@@ -465,6 +473,79 @@ def load_data():
         
     except Exception as e:
         return jsonify({'error': f'Failed to load data: {str(e)}'}), 500
+
+
+@app.route('/api/polymarket-backtest/data-info', methods=['POST'])
+def polymarket_data_info():
+    """Return date range for a Polymarket data file (without OHLC check)"""
+    try:
+        data = request.get_json()
+        file_path = data.get('file_path')
+        
+        if not file_path:
+            return jsonify({'error': 'File path cannot be empty'}), 400
+        
+        try:
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            elif file_path.endswith('.feather'):
+                df = pd.read_feather(file_path)
+            elif file_path.endswith('.parquet'):
+                df = pd.read_parquet(file_path)
+            else:
+                return jsonify({'error': 'Unsupported format'}), 400
+        except Exception as e:
+            return jsonify({'error': f'Failed to read file: {str(e)}'}), 400
+        
+        # Extract timestamps from various PM formats or price data (index)
+        start_date = None
+        end_date = None
+        total = len(df)
+
+        if 'event_start_ts' in df.columns:
+            ts_vals = df['event_start_ts'].dropna().astype(int)
+            if len(ts_vals):
+                start_date = pd.Timestamp(int(ts_vals.min()), unit='s', tz='UTC').isoformat()
+                end_date = pd.Timestamp(int(ts_vals.max()), unit='s', tz='UTC').isoformat()
+        elif 'start_ts' in df.columns:
+            st = df['start_ts'].dropna()
+            if len(st):
+                if pd.api.types.is_numeric_dtype(st):
+                    start_date = pd.Timestamp(int(st.min()), unit='s', tz='UTC').isoformat()
+                    end_date = pd.Timestamp(int(st.max()), unit='s', tz='UTC').isoformat()
+                else:
+                    dts = pd.to_datetime(st)
+                    start_date = dts.min().isoformat()
+                    end_date = dts.max().isoformat()
+        elif 'slug' in df.columns:
+            import re
+            tss = []
+            for slug in df['slug'].dropna():
+                m = re.search(r'-([0-9]{10,})$', str(slug))
+                if m:
+                    tss.append(int(m.group(1)))
+            if tss:
+                start_date = pd.Timestamp(min(tss), unit='s', tz='UTC').isoformat()
+                end_date = pd.Timestamp(max(tss), unit='s', tz='UTC').isoformat()
+        # Support price data files with datetime index
+        elif df.index.name == 'timestamp' and hasattr(df.index.dtype, 'name') and 'datetime' in str(df.index.dtype).lower():
+            start_date = df.index.min().isoformat()
+            end_date = df.index.max().isoformat()
+        elif 'timestamp' in df.columns or 'timestamps' in df.columns:
+            ts_col = 'timestamps' if 'timestamps' in df.columns else 'timestamp'
+            ts = pd.to_datetime(df[ts_col].dropna())
+            if len(ts):
+                start_date = ts.min().isoformat()
+                end_date = ts.max().isoformat()
+        
+        return jsonify({
+            'success': True,
+            'total': total,
+            'start_date': start_date,
+            'end_date': end_date,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
@@ -1454,8 +1535,14 @@ def polymarket_backtest_start():
         # Convert timestamps if needed
         if "event_start_ts" in df_pm.columns:
             df_pm = df_pm.sort_values("event_start_ts").reset_index(drop=True)
+        elif "slug" in df_pm.columns or "start_ts" in df_pm.columns:
+            df_pm = df_pm.sort_values("start_ts").reset_index(drop=True)
     except Exception as e:
         return jsonify({'error': f'Polymarket data: {str(e)}'}), 400
+
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+    print(f"[Polymarket backtest request]  start_date={start_date!r}  end_date={end_date!r}")
 
     params = {
         'lookback': int(data.get('lookback', 120)),
@@ -1467,10 +1554,15 @@ def polymarket_backtest_start():
         'temperature': float(data.get('temperature', 0.1)),
         'top_p': float(data.get('top_p', 1.0)),
         'sample_count': int(data.get('sample_count', 1)),
-        'start_date': data.get('start_date'),
-        'end_date': data.get('end_date'),
+        'start_date': start_date,
+        'end_date': end_date,
         'model_key': data.get('model_key', 'unknown'),
     }
+
+    # Force pred_len=1 for Polymarket backtest (markets settle in 5min)
+    if params['pred_len'] != 1:
+        print(f"[Polymarket backtest] WARNING: pred_len was {params['pred_len']}, forcing to 1 (Polymarket markets are 5min)")
+        params['pred_len'] = 1
 
     session_id = str(uuid.uuid4())
     session = PolymarketBacktestSession(df_price, df_pm, predictor, params)
